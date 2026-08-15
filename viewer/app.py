@@ -94,6 +94,30 @@ def _clamp_pan(view: ViewState, iw: float, ih: float, vw: float, vh: float, scal
     view.pan_y = min(max(-max_y, view.pan_y), max_y)
 
 
+def _zoom_anchored(view: ViewState, iw: float, ih: float, vw: float, vh: float,
+                   cx: float, cy: float, factor: float) -> bool:
+    """以视口内 (cx, cy) 为锚点缩放：锚点下的图片像素在缩放前后保持不动。
+
+    返回 True 表示缩放生效。
+    """
+    if iw <= 0 or vw <= 0:
+        return False
+    s0 = _compute_scale(view, iw, ih, vw, vh)          # 当前渲染倍率
+    s1 = max(MIN_ZOOM, min(MAX_ZOOM, s0 * factor))
+    if abs(s1 - s0) < 1e-9:
+        return False
+    left0 = (vw - iw * s0) / 2 + view.pan_x            # 缩放前图片左上角
+    top0 = (vh - ih * s0) / 2 + view.pan_y
+    ix = (cx - left0) / s0                             # 锚点下的图片像素（图像坐标）
+    iy = (cy - top0) / s0
+    view.mode = "custom"
+    view.zoom = s1
+    view.pan_x = cx - ix * s1 - (vw - iw * s1) / 2     # 缩放后锚点像素仍位于光标处
+    view.pan_y = cy - iy * s1 - (vh - ih * s1) / 2
+    _clamp_pan(view, iw, ih, vw, vh, s1)
+    return True
+
+
 @ft.component
 def ImageViewerApp():
     page = ft.context.page
@@ -454,20 +478,37 @@ def ImageViewerApp():
     # ---------- 鼠标交互 ----------
 
     def _on_scroll(e: ft.ScrollEvent) -> None:
-        """滚轮：默认翻页；按住 Ctrl 时切换为缩放（dy>0 视为上滑）。"""
+        """滚轮三段式：
+        1. Ctrl+滚轮：以鼠标位置为锚点缩放（向上放大、向下缩小）；
+        2. 图片完全可见：向上翻上一张、向下翻下一张；
+        3. 图片溢出视口：向上/向下滚动浏览图片区域（到边界即停，由 clamp 保证）。
+        dy>0 视为向上滚动。
+        """
         st = app.current
         dy = e.scroll_delta.y
         if dy == 0:
             return
+        w, h = img_wh
+        vw, vh = st.viewport
+        scale = _compute_scale(st.view, w, h, vw, vh)
         if st.ctrl_held:
-            st.view.mode = "custom"
-            st.view.zoom = min(
-                MAX_ZOOM,
-                max(MIN_ZOOM, st.view.zoom * (ZOOM_STEP if dy > 0 else 1 / ZOOM_STEP)),
-            )
+            # Ctrl+滚轮：基于鼠标位置缩放
+            loc = e.local_position
+            cx = loc.x if loc is not None else vw / 2
+            cy = loc.y if loc is not None else vh / 2
+            _zoom_anchored(st.view, w, h, vw, vh, cx, cy,
+                           ZOOM_STEP if dy > 0 else 1 / ZOOM_STEP)
+            set_pan_xy((st.view.pan_x, st.view.pan_y))
             sync_ui()
-        else:
+        elif w * scale <= vw and h * scale <= vh:
+            # 图片完全在视野中：翻页
             page.run_task(_goto, -1 if dy > 0 else 1)
+        else:
+            # 图片溢出：滚动浏览（步长随滚轮幅度，边界处自动停止）
+            step = max(60.0, vh * 0.12) * max(1.0, abs(dy) / 100.0)
+            st.view.pan_y += step if dy > 0 else -step
+            _clamp_pan(st.view, w, h, vw, vh, scale)
+            set_pan_xy((st.view.pan_x, st.view.pan_y))
 
     def _on_pan_update(e: ft.DragUpdateEvent) -> None:
         """按住左键拖动平移（带边界限制）。"""
