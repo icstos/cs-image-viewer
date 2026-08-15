@@ -151,6 +151,7 @@ def ImageViewerApp():
     paused, set_paused = ft.use_state(False)
     pan_xy, set_pan_xy = ft.use_state((0.0, 0.0))
     sel_rect_state, set_sel_rect_state = ft.use_state(None)   # 选区矩形（视口坐标）
+    _, set_render_tick = ft.use_state(0)   # 渲染计数：强制视图状态变化后重绘
     show_delete, set_show_delete = ft.use_state(False)
     snack, set_snack = ft.use_state(None)
 
@@ -185,6 +186,9 @@ def ImageViewerApp():
         scale = _compute_scale(st.view, w, h, *st.viewport)
         _clamp_pan(st.view, w, h, *st.viewport, scale)
         set_pan_xy((st.view.pan_x, st.view.pan_y))
+        # 0.86.x 的 use_state 做浅比较：纯视图操作（适应窗口/1:1/缩放）的镜像
+        # 状态可能全部相同而跳过重绘，这里用递增计数强制渲染一次
+        set_render_tick(lambda t: t + 1)
 
     def toast(message: str, seconds: float = 2.5) -> None:
         """底部轻提示（SnackBar）。"""

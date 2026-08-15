@@ -52,4 +52,4 @@ viewer/
 
 ## 说明
 
-- Flet 0.86.x 已知怪癖（已在代码中规避）：`theme_mode` 与窗口尺寸须在 `render()` 后设置；`page.width/height` 初始为陈旧值，以 resize 事件为准；Column 中 expand 子控件会吞掉后续兄弟空间、Stack 的 bottom 定位失效，故布局全部使用显式高度；组合键事件的 ctrl/shift 标志上报不可靠（实测恒为 False），修饰键状态需用 `KeyboardListener` 的 on_key_down/on_key_up 跟踪（+系统键查询兜底），点击图片区时重聚焦。
+- Flet 0.86.x 已知怪癖（已在代码中规避）：`theme_mode` 与窗口尺寸须在 `render()` 后设置；`page.width/height` 初始为陈旧值，以 resize 事件为准；Column 中 expand 子控件会吞掉后续兄弟空间、Stack 的 bottom 定位失效，故布局全部使用显式高度；组合键事件的 ctrl/shift 标志上报不可靠（实测恒为 False），修饰键状态需用 `KeyboardListener` 的 on_key_down/on_key_up 跟踪（+系统键查询兜底），点击图片区时重聚焦；`use_state` 更新做浅比较——纯视图状态（适应窗口/1:1/缩放）变化时镜像状态可能全部相同而**不触发重绘**，需在 sync_ui 末尾用递增计数 `set_render_tick(lambda t: t+1)` 强制渲染。
