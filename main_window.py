@@ -27,6 +27,9 @@ BG_COLOR = "#1e1e1e"
 PANEL_COLOR = "#2d2d2d"
 TEXT_COLOR = "#e0e0e0"
 
+_MENU_BAR_H = 36   # MenuBar 估计高度
+_STATUS_BAR_H = 32  # 状态栏估计高度
+
 
 def _clamp(value: float, low: float, high: float) -> float:
     return max(low, min(high, value))
@@ -326,11 +329,18 @@ def MainWindow(state: ViewerState) -> ft.Control:
     def _on_double_tap(e: ft.ControlEvent) -> None:
         state.fullscreen = not state.fullscreen
 
-    def _on_viewport_resize(e: ft.LayoutSizeChangeEvent) -> None:
-        if e.width == state.viewport_w and e.height == state.viewport_h:
+    def _on_page_resize(e: ft.PageResizeEvent) -> None:
+        """页面尺寸变化时更新视口，弥补 on_size_change 在首帧尺寸不准的问题。"""
+        vw = e.width
+        vh = e.height
+        if not state.fullscreen:
+            vh -= _MENU_BAR_H + _STATUS_BAR_H
+        if vw <= 0 or vh <= 0:
             return
-        state.viewport_w = e.width
-        state.viewport_h = e.height
+        if vw == state.viewport_w and vh == state.viewport_h:
+            return
+        state.viewport_w = vw
+        state.viewport_h = vh
         if state.fit_mode != "custom":
             _apply_fit_mode()
 
@@ -378,6 +388,7 @@ def MainWindow(state: ViewerState) -> ft.Control:
 
     def _setup_keyboard() -> None:
         page.on_keyboard_event = _on_keyboard
+        page.on_resize = _on_page_resize
         page.update()
     ft.use_effect(_setup_keyboard, dependencies=[])
 
@@ -488,16 +499,24 @@ def MainWindow(state: ViewerState) -> ft.Control:
             asyncio.create_task(result)
 
     image_area = _build_image_area(
-        state, _on_viewport_resize, _on_pan_update, _on_scroll, _on_double_tap
+        state, _on_pan_update, _on_scroll, _on_double_tap
     )
     body: ft.Control
     if state.fullscreen:
-        body = ft.Container(content=image_area, bgcolor=BG_COLOR, expand=True)
+        body = ft.Container(
+            content=image_area,
+            bgcolor=BG_COLOR,
+            expand=True,
+        )
     else:
         body = ft.Column(
             controls=[
                 _build_menu_bar(_run_menu_action, state),
-                ft.Container(content=image_area, bgcolor=BG_COLOR, expand=True),
+                ft.Container(
+                    content=image_area,
+                    bgcolor=BG_COLOR,
+                    expand=True,
+                ),
                 _build_status_bar(state),
             ],
             spacing=0,
@@ -507,6 +526,7 @@ def MainWindow(state: ViewerState) -> ft.Control:
     return ft.KeyboardListener(
         content=body,
         autofocus=True,
+        expand=True,
         on_key_down=_on_key_down,
         on_key_up=_on_key_up,
     )
@@ -607,7 +627,6 @@ def _build_status_bar(state: ViewerState) -> ft.Control:
 
 def _build_image_area(
     state: ViewerState,
-    on_resize,
     on_pan,
     on_scroll,
     on_double_tap,
@@ -634,7 +653,6 @@ def _build_image_area(
             ),
             alignment=ft.Alignment.CENTER,
             expand=True,
-            on_size_change=on_resize,
         )
 
     # 计算显示尺寸和位置（居中对齐 + 平移）
@@ -704,5 +722,4 @@ def _build_image_area(
         mouse_cursor=ft.MouseCursor.GRAB,
         expand=True,
         drag_interval=16,
-        on_size_change=on_resize,
     )
