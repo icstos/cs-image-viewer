@@ -13,7 +13,33 @@ from pathlib import Path
 from PIL import Image, ImageOps
 
 # 支持的图片扩展名（小写）
-IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".gif", ".webp", ".tif", ".tiff"}
+IMAGE_EXTS = {
+    # 主流格式
+    ".jpg", ".jpeg", ".jpe", ".jfif", ".png", ".bmp", ".gif", ".webp", ".tif", ".tiff",
+    # 特殊格式
+    ".psd",                                        # Photoshop（Pillow 原生）
+    ".svg",                                        # 矢量图（svglib + reportlab 渲染）
+    ".heic", ".heif",                             # 高效图片格式（pillow-heif）
+    # 相机 RAW
+    ".cr2", ".cr3", ".nef", ".nrw", ".arw", ".srf", ".dng", ".raf", ".orf", ".rw2",
+    ".pef", ".srw", ".erf", ".3fr", ".mef", ".mrw", ".iiq", ".kdc", ".raw", ".x3f",
+}
+
+# 相机 RAW 扩展名（走 rawpy 解码）
+_RAW_EXTS = {
+    ".cr2", ".cr3", ".nef", ".nrw", ".arw", ".srf", ".dng", ".raf", ".orf", ".rw2",
+    ".pef", ".srw", ".erf", ".3fr", ".mef", ".mrw", ".iiq", ".kdc", ".raw", ".x3f",
+}
+
+# 注册 HEIC/HEIF 解码（可选依赖，缺失时给出友好提示）
+_HEIF_AVAILABLE = False
+try:
+    import pillow_heif
+
+    pillow_heif.register_heif_opener()
+    _HEIF_AVAILABLE = True
+except ImportError:
+    pass
 
 _DIGIT_RE = re.compile(r"(\d+)")
 
@@ -50,6 +76,7 @@ class ImageManager:
         # 编码缓存：key=(索引, 旋转, 水平翻转, 垂直翻转) -> (data_uri, 宽, 高)
         self._encoded: dict[tuple, tuple[str, int, int]] = {}
         self._failed: set[int] = set()                     # 已确认无法解码的索引
+        self.last_error: str = ""                          # 最近一次解码失败原因（供 UI 提示）
 
     # ---------- 文件列表 ----------
 
@@ -184,18 +211,32 @@ class ImageManager:
         if idx in self._failed:
             return None
         try:
-            with Image.open(self.files[idx]) as raw:
-                raw.load()
-            im = ImageOps.exif_transpose(raw)      # 按 EXIF 方向摆正照片
+            im = self._load_image(self.files[idx])
+            im = ImageOps.exif_transpose(im)      # 按 EXIF 方向摆正照片
             im = self._normalize_mode(im)
-        except Exception:
+        except Exception as exc:
             self._failed.add(idx)
+            self.last_error = str(exc)
             return None
         self._decoded[idx] = im
         self._decoded.move_to_end(idx)
         while len(self._decoded) > self._cache_size:   # 淘汰最久未用的解码图
             self._decoded.popitem(last=False)
         return im
+
+    @staticmethod
+    def _load_image(path: Path) -> Image.Image:
+        """按扩展名路由解码器：RAW 走 rawpy、SVG 走 svglib，其余走 Pillow。"""
+        ext = path.suffix.lower()
+        if ext in _RAW_EXTS:
+            return _decode_raw(path)
+        if ext == ".svg":
+            return _decode_svg(path)
+        if ext in (".heic", ".heif") and not _HEIF_AVAILABLE:
+            raise RuntimeError("HEIC/HEIF 需要安装 pillow-heif：pip install pillow-heif")
+        with Image.open(path) as raw:
+            raw.load()
+        return raw
 
     @staticmethod
     def _normalize_mode(im: Image.Image) -> Image.Image:
@@ -229,3 +270,30 @@ class ImageManager:
             im.save(buf, format="JPEG", quality=88)
             mime = "image/jpeg"
         return f"data:{mime};base64,{base64.b64encode(buf.getvalue()).decode('ascii')}"
+
+
+def _decode_raw(path: Path) -> Image.Image:
+    """相机 RAW 解码：rawpy 出图（相机白平衡、自动亮度）。"""
+    try:
+        import rawpy
+    except ImportError:
+        raise RuntimeError("相机 RAW 需要安装 rawpy：pip install rawpy") from None
+    with rawpy.imread(str(path)) as raw:
+        rgb = raw.postprocess(use_camera_wb=True, no_auto_bright=False)
+    return Image.fromarray(rgb)
+
+
+def _decode_svg(path: Path) -> Image.Image:
+    """SVG 矢量图渲染为位图（resvg，内置 Rust 渲染引擎，无系统依赖）。"""
+    try:
+        import resvg
+    except ImportError:
+        raise RuntimeError("SVG 需要安装 resvg：pip install resvg") from None
+    opts = resvg.usvg.Options.default()
+    opts.resources_dir = str(path.parent)      # 支持相对路径引用外部资源
+    tree = resvg.usvg.Tree.from_str(path.read_text(encoding="utf-8"), opts)
+    png = resvg.render(tree, transform=(1.0, 0.0, 0.0, 1.0, 0.0, 0.0))
+    buf = io.BytesIO(png)
+    with Image.open(buf) as im:
+        im.load()
+    return im

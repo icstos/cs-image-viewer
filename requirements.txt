@@ -1,3 +1,7 @@
 flet>=0.86
 pillow>=10.4
 send2trash>=1.8.3
+# 特殊格式支持（可选，缺失时对应格式会提示安装）
+pillow-heif>=1.0
+rawpy>=0.20
+resvg>=2.0

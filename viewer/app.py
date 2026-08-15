@@ -13,7 +13,7 @@ from pathlib import Path
 
 import flet as ft
 
-from .image_manager import ImageManager, format_size
+from .image_manager import IMAGE_EXTS, ImageManager, format_size
 from .shortcuts import match
 
 START_PATH: str | None = None   # 启动时自动打开的文件/文件夹（由 main.py 注入）
@@ -223,7 +223,9 @@ def ImageViewerApp():
             return                              # 已被更新的请求取代
         sync_ui()
         if st.manager.get_display()[0] is None:
-            toast("无法打开图片，已跳过")
+            reason = st.manager.last_error
+            hint = f"（{reason}）" if reason and len(reason) < 80 else ""
+            toast(f"无法打开图片{hint}，已跳过")
 
     async def _goto(delta: int) -> None:
         """切换图片（首尾循环、自动跳过坏图），异步解码。"""
@@ -241,7 +243,7 @@ def ImageViewerApp():
             files = await picker_ref.current.pick_files(
                 dialog_title="打开图片",
                 file_type=ft.FilePickerFileType.CUSTOM,
-                allowed_extensions=["jpg", "jpeg", "png", "bmp", "gif", "webp", "tif", "tiff"],
+                allowed_extensions=sorted(ext.lstrip(".") for ext in IMAGE_EXTS),
                 allow_multiple=False,
             )
         except Exception as exc:
