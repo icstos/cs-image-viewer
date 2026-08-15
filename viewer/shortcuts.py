@@ -36,11 +36,17 @@ _CTRL_KEYMAP: dict[tuple[bool, str], str] = {
 }
 
 
-def match(e) -> str | None:
-    """将键盘事件映射为动作名；无法识别的按键返回 None。"""
+def match(e, ctrl: bool | None = None, shift: bool | None = None) -> str | None:
+    """将键盘事件映射为动作名；无法识别的按键返回 None。
+
+    ctrl/shift 可显式传入（0.86.x 客户端上报的组合键标志不可靠时，
+    由调用方以 KeyboardListener 跟踪状态 + 系统查询替代）。
+    """
     key = e.key.strip().lower() or " "   # 空格键标签可能是 " "，strip 后还原
-    if e.ctrl:
-        return _CTRL_KEYMAP.get((e.shift, key))
+    ctrl = e.ctrl if ctrl is None else ctrl
+    shift = e.shift if shift is None else shift
+    if ctrl:
+        return _CTRL_KEYMAP.get((shift, key))
     if key in ("0", "1"):           # 裸数字键不触发
         return None
     return _KEYMAP.get(key)

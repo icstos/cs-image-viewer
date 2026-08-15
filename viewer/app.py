@@ -79,7 +79,8 @@ class AppState:
     slideshow_on: bool = False
     paused: bool = False
     interval: float = 3.0                       # 幻灯片间隔（秒）
-    ctrl_held: bool = False                     # Ctrl 是否按住（滚轮缩放判定）
+    ctrl_held: bool = False                     # Ctrl 是否按住（KeyboardListener 跟踪）
+    shift_held: bool = False                    # Shift 是否按住（KeyboardListener 跟踪）
     viewport: tuple[float, float] = (900.0, 560.0)   # 图片区可视尺寸
     gen: int = 0                                # 异步解码代际计数，防止旧任务覆盖新状态
     slideshow_task: asyncio.Future | None = None
@@ -396,24 +397,35 @@ def ImageViewerApp():
     def _on_keyboard(e: ft.KeyboardEvent) -> None:
         """页面级键盘分发：快捷键匹配。
 
-        Ctrl 键状态由 KeyboardListener 的 on_key_down/on_key_up 维护，
-        此处不再自行推断（0.86.x 的页面级事件收不到修饰键本身）。
+        0.86.x 客户端在组合键事件上报告的 ctrl/shift 标志不可靠（实测恒为
+        False），因此以 KeyboardListener 跟踪的按键状态 + 系统键查询为准。
         """
-        action = match(e)
+        st = app.current
+        if not _ctrl_pressed() and not e.ctrl:
+            st.ctrl_held = False              # 自愈：系统确认 Ctrl 已松开
+        ctrl = e.ctrl or st.ctrl_held or _ctrl_pressed()
+        shift = e.shift or st.shift_held
+        action = match(e, ctrl=ctrl, shift=shift)
         if action:
             page.run_task(_run_action, action)
 
     # ---------- 修饰键跟踪（KeyboardListener） ----------
 
     def _on_key_down(e) -> None:
-        """Ctrl 按下：标记 Ctrl 状态（滚轮缩放判断用）。"""
-        if "control" in (e.key or "").lower():
+        """Ctrl/Shift 按下：记录修饰键状态（滚轮缩放与组合键判断用）。"""
+        key = (e.key or "").lower()
+        if "control" in key:
             app.current.ctrl_held = True
+        elif "shift" in key:
+            app.current.shift_held = True
 
     def _on_key_up(e) -> None:
-        """Ctrl 抬起：清除 Ctrl 状态。"""
-        if "control" in (e.key or "").lower():
+        """Ctrl/Shift 抬起：清除修饰键状态。"""
+        key = (e.key or "").lower()
+        if "control" in key:
             app.current.ctrl_held = False
+        elif "shift" in key:
+            app.current.shift_held = False
 
     def _on_tap_down(_e) -> None:
         """点击图片区时把键盘焦点还给 KeyboardListener，恢复修饰键跟踪。"""
