@@ -44,8 +44,7 @@ SLIDESHOW_INTERVALS = (1, 2, 3, 5, 10)   # 幻灯片可选间隔（秒）
 def _ctrl_pressed() -> bool:
     """查询系统级 Ctrl 键是否按住（Windows）。
 
-    0.86.x 的 page.on_keyboard_event 不会投递修饰键本身的按下事件，
-    因此滚轮缩放不能依赖键盘事件流，需直接查询键状态。
+    作为 KeyboardListener 的兜底：焦点不在图片区时监听器收不到修饰键事件。
     """
     try:
         import ctypes
@@ -155,6 +154,7 @@ def ImageViewerApp():
         picker_ref.current = ft.FilePicker()
     dispatch_ref = ft.use_ref(None)             # 键盘分发（每帧刷新，闭包不陈旧）
     resize_ref = ft.use_ref(None)               # 窗口尺寸分发
+    kb_listener_ref = ft.use_ref(None)          # KeyboardListener 实例（用于重聚焦）
 
     # ---------- 状态同步 ----------
 
@@ -384,16 +384,32 @@ def ImageViewerApp():
             await result
 
     def _on_keyboard(e: ft.KeyboardEvent) -> None:
-        """页面级键盘分发；仅挂载一次，通过 dispatch_ref 保持闭包新鲜。"""
-        st = app.current
-        key = e.key.strip().lower()
-        if "control" in key:                # 修饰键按下：标记 Ctrl 状态
-            st.ctrl_held = True
-            return
-        st.ctrl_held = e.ctrl               # 普通按键可自愈 Ctrl 状态
+        """页面级键盘分发：快捷键匹配。
+
+        Ctrl 键状态由 KeyboardListener 的 on_key_down/on_key_up 维护，
+        此处不再自行推断（0.86.x 的页面级事件收不到修饰键本身）。
+        """
         action = match(e)
         if action:
             page.run_task(_run_action, action)
+
+    # ---------- 修饰键跟踪（KeyboardListener） ----------
+
+    def _on_key_down(e) -> None:
+        """Ctrl 按下：标记 Ctrl 状态（滚轮缩放判断用）。"""
+        if "control" in (e.key or "").lower():
+            app.current.ctrl_held = True
+
+    def _on_key_up(e) -> None:
+        """Ctrl 抬起：清除 Ctrl 状态。"""
+        if "control" in (e.key or "").lower():
+            app.current.ctrl_held = False
+
+    def _on_tap_down(_e) -> None:
+        """点击图片区时把键盘焦点还给 KeyboardListener，恢复修饰键跟踪。"""
+        listener = kb_listener_ref.current
+        if listener is not None:
+            page.run_task(listener.focus)
 
     def _on_resize(e: ft.PageResizeEvent) -> None:
         set_initial_size(e.width, e.height)   # 同步 INITIAL_SIZE，布局尺寸以此为准
@@ -692,10 +708,19 @@ def ImageViewerApp():
         height=image_h,
         expand=fullscreen,                  # 全屏时占满整窗
         drag_interval=16,                   # 节流拖动事件，保证流畅
+        on_tap_down=_on_tap_down,           # 点击时恢复键盘焦点
         on_scroll=_on_scroll,
         on_pan_update=_on_pan_update,
         on_double_tap=_on_double_tap,
         content=_image_area(),
     )
     controls = [image_view] if fullscreen else [_menu_bar(), image_view, _status_bar()]
-    return ft.Column(expand=True, spacing=0, controls=controls)
+    root = ft.Column(expand=True, spacing=0, controls=controls)
+    # 用 KeyboardListener 接收 Ctrl 键按下/抬起（焦点丢失时由 _ctrl_pressed 兜底）
+    kb_listener_ref.current = ft.KeyboardListener(
+        content=root,
+        autofocus=True,
+        on_key_down=_on_key_down,
+        on_key_up=_on_key_up,
+    )
+    return kb_listener_ref.current

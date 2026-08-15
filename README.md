@@ -52,4 +52,4 @@ viewer/
 
 ## 说明
 
-- Flet 0.86.x 已知怪癖（已在代码中规避）：`theme_mode` 与窗口尺寸须在 `render()` 后设置；`page.width/height` 初始为陈旧值，以 resize 事件为准；Column 中 expand 子控件会吞掉后续兄弟空间、Stack 的 bottom 定位失效，故布局全部使用显式高度。
+- Flet 0.86.x 已知怪癖（已在代码中规避）：`theme_mode` 与窗口尺寸须在 `render()` 后设置；`page.width/height` 初始为陈旧值，以 resize 事件为准；Column 中 expand 子控件会吞掉后续兄弟空间、Stack 的 bottom 定位失效，故布局全部使用显式高度；修饰键（Ctrl）需用 `KeyboardListener` 接收（页面级 `on_keyboard_event` 收不到修饰键本身），并在点击图片区时重聚焦。
