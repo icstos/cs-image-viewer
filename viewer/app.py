@@ -87,6 +87,9 @@ class AppState:
     sel_rect: tuple[float, float, float, float] | None = None   # 左键拖拽选区（视口坐标 x0,y0,x1,y1）
     sel_drag_start: tuple[float, float] | None = None          # 选区拖拽起点（本地坐标）
     right_last: tuple[float, float] | None = None              # 右键拖拽上一位置（本地坐标）
+    anim_playing: bool = False                                 # 动图播放中
+    anim_paused: bool = False                                  # 动图暂停
+    anim_task: asyncio.Future | None = None                    # 动图播放任务
 
 
 def _compute_scale(view: ViewState, iw: float, ih: float, vw: float, vh: float) -> float:
@@ -149,6 +152,8 @@ def ImageViewerApp():
     fullscreen, set_fullscreen = ft.use_state(False)
     slideshow_on, set_slideshow_on = ft.use_state(False)
     paused, set_paused = ft.use_state(False)
+    anim_playing, set_anim_playing = ft.use_state(False)
+    anim_paused, set_anim_paused = ft.use_state(False)
     pan_xy, set_pan_xy = ft.use_state((0.0, 0.0))
     sel_rect_state, set_sel_rect_state = ft.use_state(None)   # 选区矩形（视口坐标）
     _, set_render_tick = ft.use_state(0)   # 渲染计数：强制视图状态变化后重绘
@@ -166,6 +171,12 @@ def ImageViewerApp():
 
     def sync_ui() -> None:
         """把 AppState 最新值同步到 UI 镜像状态，驱动一次组件重绘。"""
+        try:
+            _sync_ui_body()
+        except RuntimeError:
+            pass   # 窗口关闭、会话销毁后的迟到同步直接忽略
+
+    def _sync_ui_body() -> None:
         st = app.current
         if st.sel_rect is not None:           # 视图变化后选区失效，统一清除
             st.sel_rect = None
@@ -174,14 +185,17 @@ def ImageViewerApp():
         set_img_src(uri)
         set_img_wh((w, h))
         info = st.manager.info()
+        info_str = f"{info['w']}×{info['h']} · {format_size(info['size'])}"
+        if info["frames"] > 1:
+            info_str += f" · 动图 {st.manager.current_frame + 1}/{info['frames']}帧"
         set_file_name(info["name"])
-        set_info_text(
-            f"{info['w']}×{info['h']} · {format_size(info['size'])}" if info["total"] else ""
-        )
+        set_info_text(info_str if info["total"] else "")
         set_page_text(f"{info['pos']} / {info['total']}" if info["total"] else "")
         set_fullscreen(st.fullscreen)
         set_slideshow_on(st.slideshow_on)
         set_paused(st.paused)
+        set_anim_playing(st.anim_playing)
+        set_anim_paused(st.anim_paused)
         # 计算当前缩放并夹紧平移边界
         scale = _compute_scale(st.view, w, h, *st.viewport)
         _clamp_pan(st.view, w, h, *st.viewport, scale)
@@ -226,6 +240,12 @@ def ImageViewerApp():
             reason = st.manager.last_error
             hint = f"（{reason}）" if reason and len(reason) < 80 else ""
             toast(f"无法打开图片{hint}，已跳过")
+        # 动图自动播放 / 静态图停止播放
+        n = st.manager.frame_count()
+        if (n > 1) != st.anim_playing:
+            st.anim_playing = n > 1
+            st.anim_paused = False
+            sync_ui()
 
     async def _goto(delta: int) -> None:
         """切换图片（首尾循环、自动跳过坏图），异步解码。"""
@@ -235,6 +255,40 @@ def ImageViewerApp():
         elif st.manager.files and st.manager.get_display()[0] is None:
             toast("没有可显示的图片")
             sync_ui()
+
+    # ---------- 动图播放 ----------
+
+    async def _refresh_frame_async() -> None:
+        """后台重编码当前帧并同步 UI（动图逐帧显示）。"""
+        st = app.current
+        await asyncio.get_running_loop().run_in_executor(None, st.manager.get_display)
+        sync_ui()
+
+    async def _anim_loop() -> None:
+        """动图播放循环：按每帧时长推进。"""
+        st = app.current
+        try:
+            while st.anim_playing:
+                await asyncio.sleep(st.manager.frame_duration() / 1000)
+                if st.anim_paused or not st.anim_playing:
+                    continue
+                st.manager.next_frame()
+                await _refresh_frame_async()
+        except asyncio.CancelledError:
+            pass
+        finally:
+            st.anim_task = None
+
+    def _anim_effect() -> None:
+        """动图播放任务的生命周期管理（随 anim_playing 启停）。"""
+        st = app.current
+        if st.anim_playing and (st.anim_task is None or st.anim_task.done()):
+            st.anim_task = page.run_task(_anim_loop)
+        elif not st.anim_playing and st.anim_task is not None:
+            st.anim_task.cancel()
+            st.anim_task = None
+
+    ft.use_effect(_anim_effect, [app.current.anim_playing])
 
     # ---------- 动作（快捷键 / 菜单 / 鼠标共用） ----------
 
@@ -337,6 +391,64 @@ def ImageViewerApp():
             st.paused = not st.paused
             sync_ui()
 
+    # ---------- 动图控制 / 导出 ----------
+
+    def act_anim_toggle(_e=None) -> None:
+        """动图播放 / 暂停 / 继续。"""
+        st = app.current
+        if st.manager.frame_count() <= 1:
+            return
+        if st.anim_playing and st.anim_paused:
+            st.anim_paused = False            # 继续
+        elif st.anim_playing:
+            st.anim_paused = True             # 暂停
+        else:
+            st.anim_playing = True            # 播放
+        sync_ui()
+
+    def _step_frame(delta: int) -> None:
+        """动图逐帧步进（自动暂停播放）。"""
+        st = app.current
+        if st.manager.frame_count() <= 1:
+            return
+        st.anim_paused = True
+        st.manager.next_frame(delta)
+        page.run_task(_refresh_frame_async)
+
+    def act_frame_prev(_e=None) -> None:
+        """上一帧。"""
+        _step_frame(-1)
+
+    def act_frame_next(_e=None) -> None:
+        """下一帧。"""
+        _step_frame(1)
+
+    async def act_export_frame(_e=None) -> None:
+        """导出当前帧（含旋转/翻转）为 PNG。"""
+        st = app.current
+        if not st.manager.files:
+            return
+        name = Path(st.manager.info()["name"]).stem
+        try:
+            path = await picker_ref.current.save_file(
+                dialog_title="导出当前帧",
+                file_name=f"{name}_frame{st.manager.current_frame + 1:03d}.png",
+                allowed_extensions=["png"],
+                file_type=ft.FilePickerFileType.IMAGE,
+            )
+        except Exception as exc:
+            toast(f"导出失败：{exc}")
+            return
+        if not path:
+            return
+        try:
+            await asyncio.get_running_loop().run_in_executor(
+                None, lambda: st.manager.save_current_frame(path)
+            )
+            toast(f"已导出：{Path(path).name}")
+        except Exception as exc:
+            toast(f"导出失败：{exc}")
+
     def set_interval(seconds: float) -> None:
         app.current.interval = seconds
         sync_ui()
@@ -386,6 +498,10 @@ def ImageViewerApp():
         "flip_v": lambda: act_flip_v(),
         "slideshow": lambda: act_slideshow(),
         "pause": lambda: act_pause(),
+        "anim_toggle": lambda: act_anim_toggle(),
+        "frame_prev": lambda: act_frame_prev(),
+        "frame_next": lambda: act_frame_next(),
+        "export_frame": lambda: act_export_frame(),
         "open_file": lambda: act_open_file(),
         "open_folder": lambda: act_open_folder(),
         "fit_window": lambda: act_fit_window(),
@@ -752,7 +868,23 @@ def ImageViewerApp():
                     for sec in SLIDESHOW_INTERVALS
                 ],
             ),
+            _menu_item("导出当前帧…", act_export_frame, ft.Icons.SAVE_ALT, "Ctrl+E"),
             _menu_item("退出", act_exit, ft.Icons.CLOSE),
+        ],
+    )
+
+    play_menu = ft.SubmenuButton(
+        content=ft.Text("播放", size=13),
+        controls=[
+            _menu_item(
+                "继续动画" if anim_playing and anim_paused
+                else ("暂停动画" if anim_playing else "播放动画"),
+                act_anim_toggle,
+                ft.Icons.PAUSE_CIRCLE if anim_playing else ft.Icons.PLAY_ARROW,
+                "A",
+            ),
+            _menu_item("上一帧", act_frame_prev, ft.Icons.SKIP_PREVIOUS, "["),
+            _menu_item("下一帧", act_frame_next, ft.Icons.SKIP_NEXT, "]"),
         ],
     )
 
@@ -805,7 +937,7 @@ def ImageViewerApp():
             border=ft.Border(bottom=ft.BorderSide(1, PANEL_BORDER)),
             alignment=ft.Alignment.CENTER_LEFT,
             padding=ft.Padding.symmetric(horizontal=4),
-            content=ft.MenuBar(controls=[file_menu, edit_menu, view_menu]),
+            content=ft.MenuBar(controls=[file_menu, play_menu, edit_menu, view_menu]),
         )
 
     def _status_bar() -> ft.Container:

@@ -22,6 +22,8 @@ _KEYMAP: dict[str, str] = {
     "h": "flip_h", "v": "flip_v",
     # 播放：S 开始/停止幻灯片，P 暂停/继续
     "s": "slideshow", "p": "pause",
+    # 动图：A 播放/暂停，[ 上一帧，] 下一帧
+    "a": "anim_toggle", "[": "frame_prev", "]": "frame_next",
     # 删除 / 取消
     "delete": "delete", "del": "delete",
     "escape": "esc", "esc": "esc",
@@ -33,6 +35,7 @@ _CTRL_KEYMAP: dict[tuple[bool, str], str] = {
     (True, "o"): "open_folder",
     (False, "0"): "fit_window",     # Ctrl+0 适应窗口
     (False, "1"): "actual_size",    # Ctrl+1 1:1 原始大小
+    (False, "e"): "export_frame",   # Ctrl+E 导出当前帧
 }
 
 

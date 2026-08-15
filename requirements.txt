@@ -5,3 +5,5 @@ send2trash>=1.8.3
 pillow-heif>=1.0
 rawpy>=0.20
 resvg>=2.0
+# APNG 逐帧（可选）
+apng>=0.3
