@@ -41,6 +41,15 @@ try:
 except ImportError:
     pass
 
+# 超大图支持：解除 Pillow 默认的解压炸弹限制（约 1.78 亿像素），
+# 超清图/长截图（如 1080x30000、100MP 照片）可正常打开。
+Image.MAX_IMAGE_PIXELS = None
+
+# 编码预算：超限图片按比例压缩后再编码，避免卡顿与内存爆炸。
+MAX_ENCODE_PIXELS = 40_000_000       # 编码像素上限（40MP）
+MAX_ENCODE_DIM = 16_000              # 编码最长边上限（16000px）
+_FLATTEN_ALPHA_PIXELS = 20_000_000   # 超大透明图压平为 JPEG（PNG 编码太慢）
+
 # 依赖文件句柄进行多帧 seek 的格式（其余格式完全解码后可释放句柄）
 _SEEK_FORMATS = {".gif", ".webp", ".tif", ".tiff"}
 
@@ -216,7 +225,7 @@ class ImageManager:
         im = self._frame_image(self.index, self.current_frame)
         if im is None:
             return None, 0, 0
-        rendered = self._apply_transform(im)
+        rendered = self._apply_transform(self._limit_size(im))
         result = (self._to_data_uri(rendered), *rendered.size)
         self._encoded[key] = result
         if len(self._encoded) > 64:        # 防止组合无限膨胀
@@ -408,9 +417,32 @@ class ImageManager:
         return im
 
     @staticmethod
+    def _limit_size(im: Image.Image) -> Image.Image:
+        """超大图压缩到编码预算内（保持宽高比），避免编码/传输卡顿。
+
+        仅作用于显示层；导出当前帧仍使用全分辨率。
+        """
+        w, h = im.size
+        scale = 1.0
+        if w * h > MAX_ENCODE_PIXELS:
+            scale = min(scale, (MAX_ENCODE_PIXELS / (w * h)) ** 0.5)
+        if max(w, h) > MAX_ENCODE_DIM:
+            scale = min(scale, MAX_ENCODE_DIM / max(w, h))
+        if scale < 1.0:
+            im = im.resize((max(int(w * scale), 1), max(int(h * scale), 1)), Image.LANCZOS)
+        return im
+
+    @staticmethod
     def _to_data_uri(im: Image.Image) -> str:
-        """编码为 data URI：带透明通道用 PNG，否则用高质量 JPEG。"""
+        """编码为 data URI：带透明通道用 PNG，否则用高质量 JPEG。
+
+        超大透明图压平为 JPEG（PNG 编码太慢且体积巨大）。
+        """
         buf = io.BytesIO()
+        if im.mode == "RGBA" and im.width * im.height > _FLATTEN_ALPHA_PIXELS:
+            bg = Image.new("RGB", im.size, (20, 20, 20))   # 与看图背景色一致
+            bg.paste(im, mask=im.getchannel("A"))
+            im = bg
         if im.mode == "RGBA":
             im.save(buf, format="PNG")
             mime = "image/png"
