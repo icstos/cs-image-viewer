@@ -1,0 +1,40 @@
+# --- START: template .gitignore  ---
+
+# custom path
+output
+docs
+
+# custom file
+*.pt
+*.log
+*.db
+
+# pyenv
+.python-version
+.env
+
+# Virtual environments
+.venv
+.idea
+.vscode
+uv.lock
+
+# Python-generated files
+# 编译的字节码
+__pycache__/
+*.py[cod]
+*$py.class
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+*.so
+
+# PyInstaller stuff
+*.manifest
+*.spec
+
+# Scrapy stuff
+.scrapy
+# --- END: template .gitignore  ---
