@@ -115,22 +115,19 @@ class ImageManager:
         return self._index >= 0
 
     def load_single(self, file_path: str) -> bool:
-        """打开单张图片。若同目录下有其他图片则一并纳入列表，并定位到所选文件。"""
+        """打开单张图片，仅加载当前文件，不扫描同目录其他图片。"""
         p = Path(file_path)
         if not p.is_file() or p.suffix.lower() not in SUPPORTED_EXTS:
             return False
 
-        if not self.load_folder(str(p.parent)):
+        info = self._probe(p)
+        if not info.valid:
             return False
 
-        for idx, info in enumerate(self._files):
-            if Path(info.path) == p.resolve():
-                self._index = idx
-                return True
-
-        # 理论上不应发生；若目录扫描未包含该文件，则回退到首张有效图。
-        self._index = self._first_valid_index(0)
-        return self._index >= 0
+        self._files = [info]
+        self._index = 0
+        self._reset_cache()
+        return True
 
     def _probe(self, path: Path) -> ImageInfo:
         """读取文件基本信息并尝试获取像素尺寸以验证可解码。"""
