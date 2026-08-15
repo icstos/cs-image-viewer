@@ -83,6 +83,9 @@ class AppState:
     viewport: tuple[float, float] = (900.0, 560.0)   # 图片区可视尺寸
     gen: int = 0                                # 异步解码代际计数，防止旧任务覆盖新状态
     slideshow_task: asyncio.Future | None = None
+    sel_rect: tuple[float, float, float, float] | None = None   # 左键拖拽选区（视口坐标 x0,y0,x1,y1）
+    sel_drag_start: tuple[float, float] | None = None          # 选区拖拽起点（本地坐标）
+    right_last: tuple[float, float] | None = None              # 右键拖拽上一位置（本地坐标）
 
 
 def _compute_scale(view: ViewState, iw: float, ih: float, vw: float, vh: float) -> float:
@@ -146,6 +149,7 @@ def ImageViewerApp():
     slideshow_on, set_slideshow_on = ft.use_state(False)
     paused, set_paused = ft.use_state(False)
     pan_xy, set_pan_xy = ft.use_state((0.0, 0.0))
+    sel_rect_state, set_sel_rect_state = ft.use_state(None)   # 选区矩形（视口坐标）
     show_delete, set_show_delete = ft.use_state(False)
     snack, set_snack = ft.use_state(None)
 
@@ -161,6 +165,9 @@ def ImageViewerApp():
     def sync_ui() -> None:
         """把 AppState 最新值同步到 UI 镜像状态，驱动一次组件重绘。"""
         st = app.current
+        if st.sel_rect is not None:           # 视图变化后选区失效，统一清除
+            st.sel_rect = None
+            set_sel_rect_state(None)
         uri, w, h = st.manager.get_display()
         set_img_src(uri)
         set_img_wh((w, h))
@@ -345,6 +352,9 @@ def ImageViewerApp():
 
     async def act_esc(_e=None) -> None:
         st = app.current
+        if st.sel_rect is not None:           # Esc：取消选区
+            _clear_selection()
+            return
         if st.fullscreen:
             st.fullscreen = False
             page.window.full_screen = False
@@ -536,23 +546,111 @@ def ImageViewerApp():
             page.run_task(_goto, -1 if dy < 0 else 1)
         else:
             # 图片溢出：滚动浏览（步长随滚轮幅度，边界处自动停止）
+            _clear_selection()
             step = max(60.0, vh * 0.12) * max(1.0, abs(dy) / 100.0)
             st.view.pan_y += step if dy < 0 else -step
             _clamp_pan(st.view, w, h, vw, vh, scale)
             set_pan_xy((st.view.pan_x, st.view.pan_y))
 
-    def _on_pan_update(e: ft.DragUpdateEvent) -> None:
-        """按住左键拖动平移（带边界限制）。"""
+    # ---------- 鼠标拖拽：左键选区 / 右键平移 ----------
+
+    def _clear_selection() -> None:
+        """清除选区（同步 AppState 与 UI 状态）。"""
+        app.current.sel_rect = None
+        set_sel_rect_state(None)
+
+    def _zoom_to_region(sel: tuple[float, float, float, float]) -> None:
+        """把选区对应的图片区域放大到填满视野（保持宽高比）。"""
         st = app.current
-        delta = e.global_delta
-        if delta is None:
+        w, h = img_wh
+        vw, vh = st.viewport
+        if w <= 0 or vw <= 0:
             return
-        st.view.pan_x += delta.x
-        st.view.pan_y += delta.y
+        x0, y0, x1, y1 = sel
+        left, top = min(x0, x1), min(y0, y1)
+        sw, sh = abs(x1 - x0), abs(y1 - y0)
+        if sw < 4 or sh < 4:                  # 忽略过小的“选区”
+            return
+        s0 = _compute_scale(st.view, w, h, vw, vh)
+        img_left = (vw - w * s0) / 2 + st.view.pan_x   # 当前图片左上角（视口坐标）
+        img_top = (vh - h * s0) / 2 + st.view.pan_y
+        # 选区对应的图片像素区域
+        ix0 = (left - img_left) / s0
+        iy0 = (top - img_top) / s0
+        iw_sel, ih_sel = sw / s0, sh / s0
+        s1 = max(MIN_ZOOM, min(MAX_ZOOM, min(vw / iw_sel, vh / ih_sel)))
+        st.view.mode = "custom"
+        st.view.zoom = s1
+        # 选区中心对准视野中心
+        cx, cy = ix0 + iw_sel / 2, iy0 + ih_sel / 2
+        st.view.pan_x = vw / 2 - cx * s1 - (vw - w * s1) / 2
+        st.view.pan_y = vh / 2 - cy * s1 - (vh - h * s1) / 2
+        _clamp_pan(st.view, w, h, vw, vh, s1)
+        _clear_selection()
+        set_pan_xy((st.view.pan_x, st.view.pan_y))
+        sync_ui()
+
+    def _on_tap(e: ft.TapEvent) -> None:
+        """单击：选区已存在且点击落在区内 -> 放大选区；否则取消选区。"""
+        st = app.current
+        sel = st.sel_rect
+        if sel is None:
+            return
+        pos = e.local_position
+        if pos is None:
+            return
+        x0, y0, x1, y1 = sel
+        if min(x0, x1) <= pos.x <= max(x0, x1) and min(y0, y1) <= pos.y <= max(y0, y1):
+            _zoom_to_region(sel)
+        else:
+            _clear_selection()
+
+    def _on_pan_start(e: ft.DragStartEvent) -> None:
+        """左键拖拽开始：创建新选区。"""
+        st = app.current
+        _clear_selection()
+        if e.local_position is not None:
+            st.sel_drag_start = (e.local_position.x, e.local_position.y)
+            st.sel_rect = (e.local_position.x, e.local_position.y) * 2
+            set_sel_rect_state(st.sel_rect)
+
+    def _on_pan_update(e: ft.DragUpdateEvent) -> None:
+        """左键拖拽中：更新选区矩形。"""
+        st = app.current
+        if st.sel_drag_start is None or e.local_position is None:
+            return
+        x0, y0 = st.sel_drag_start
+        st.sel_rect = (x0, y0, e.local_position.x, e.local_position.y)
+        set_sel_rect_state(st.sel_rect)
+
+    def _on_pan_end(_e: ft.DragEndEvent) -> None:
+        """左键拖拽结束：保留选区，等待区内单击放大。"""
+        app.current.sel_drag_start = None
+
+    def _on_right_pan_start(e) -> None:
+        """右键拖拽开始：记录起点，平移前清除选区。"""
+        st = app.current
+        _clear_selection()
+        st.right_last = (
+            (e.local_position.x, e.local_position.y) if e.local_position is not None else None
+        )
+
+    def _on_right_pan_update(e) -> None:
+        """右键拖拽：滚动图片（带边界限制）。"""
+        st = app.current
+        if e.local_position is None or st.right_last is None:
+            return
+        lx, ly = e.local_position.x, e.local_position.y
+        st.view.pan_x += lx - st.right_last[0]
+        st.view.pan_y += ly - st.right_last[1]
+        st.right_last = (lx, ly)
         w, h = img_wh
         scale = _compute_scale(st.view, w, h, *st.viewport)
         _clamp_pan(st.view, w, h, *st.viewport, scale)
         set_pan_xy((st.view.pan_x, st.view.pan_y))
+
+    def _on_right_pan_end(_e) -> None:
+        app.current.right_last = None
 
     def _on_double_tap(_e) -> None:
         """双击：切换全屏（全屏下双击即退出）。"""
@@ -585,6 +683,18 @@ def ImageViewerApp():
         pan_x, pan_y = pan_xy
         left = (vw - disp_w) / 2 + pan_x
         top = (vh - disp_h) / 2 + pan_y
+        overlay = []
+        sel = sel_rect_state
+        if sel is not None:
+            x0, y0, x1, y1 = sel
+            overlay = [ft.Container(
+                left=min(x0, x1),
+                top=min(y0, y1),
+                width=max(abs(x1 - x0), 1.0),
+                height=max(abs(y1 - y0), 1.0),
+                border=ft.Border.all(1.5, ft.Colors.BLUE_400),
+                bgcolor=ft.Colors.WHITE_24,     # 半透明填充，提升选区可见性
+            )]
         return ft.Stack(
             expand=True,
             clip_behavior=ft.ClipBehavior.HARD_EDGE,
@@ -599,6 +709,7 @@ def ImageViewerApp():
                     top=top,
                     gapless_playback=True,      # 切换图片时无闪烁
                 ),
+                *overlay,
             ],
         )
 
@@ -709,8 +820,14 @@ def ImageViewerApp():
         expand=fullscreen,                  # 全屏时占满整窗
         drag_interval=16,                   # 节流拖动事件，保证流畅
         on_tap_down=_on_tap_down,           # 点击时恢复键盘焦点
-        on_scroll=_on_scroll,
+        on_tap=_on_tap,                     # 区内单击放大选区 / 区外单击取消
+        on_pan_start=_on_pan_start,         # 左键拖拽：选区
         on_pan_update=_on_pan_update,
+        on_pan_end=_on_pan_end,
+        on_right_pan_start=_on_right_pan_start,   # 右键拖拽：滚动图片
+        on_right_pan_update=_on_right_pan_update,
+        on_right_pan_end=_on_right_pan_end,
+        on_scroll=_on_scroll,
         on_double_tap=_on_double_tap,
         content=_image_area(),
     )
