@@ -35,10 +35,18 @@ class ImageInfo:
     valid: bool = True
 
 
-def _natural_sort_key(s: str) -> list[int | str]:
-    """自然排序键：将字符串拆为数字段与非数字段交替列表。"""
+def _natural_sort_key(s: str) -> list[tuple[int, int | str]]:
+    """自然排序键：数字段按数值比较，文本段按字典序比较。"""
     parts = re.split(r"(\d+)", s.lower())
-    return [int(p) if p.isdigit() else p for p in parts if p]
+    key: list[tuple[int, int | str]] = []
+    for part in parts:
+        if not part:
+            continue
+        if part.isdigit():
+            key.append((0, int(part)))
+        else:
+            key.append((1, part))
+    return key
 
 
 class ImageManager:
@@ -107,11 +115,22 @@ class ImageManager:
         return self._index >= 0
 
     def load_single(self, file_path: str) -> bool:
-        """打开单张图片。若同目录下有其他图片则一并纳入列表。"""
+        """打开单张图片。若同目录下有其他图片则一并纳入列表，并定位到所选文件。"""
         p = Path(file_path)
         if not p.is_file() or p.suffix.lower() not in SUPPORTED_EXTS:
             return False
-        return self.load_folder(str(p.parent))
+
+        if not self.load_folder(str(p.parent)):
+            return False
+
+        for idx, info in enumerate(self._files):
+            if Path(info.path) == p.resolve():
+                self._index = idx
+                return True
+
+        # 理论上不应发生；若目录扫描未包含该文件，则回退到首张有效图。
+        self._index = self._first_valid_index(0)
+        return self._index >= 0
 
     def _probe(self, path: Path) -> ImageInfo:
         """读取文件基本信息并尝试获取像素尺寸以验证可解码。"""
