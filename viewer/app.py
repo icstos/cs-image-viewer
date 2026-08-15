@@ -41,6 +41,20 @@ ZOOM_STEP = 1.12                    # 单次缩放步进系数
 SLIDESHOW_INTERVALS = (1, 2, 3, 5, 10)   # 幻灯片可选间隔（秒）
 
 
+def _ctrl_pressed() -> bool:
+    """查询系统级 Ctrl 键是否按住（Windows）。
+
+    0.86.x 的 page.on_keyboard_event 不会投递修饰键本身的按下事件，
+    因此滚轮缩放不能依赖键盘事件流，需直接查询键状态。
+    """
+    try:
+        import ctypes
+
+        return bool(ctypes.windll.user32.GetAsyncKeyState(0x11) & 0x8000)
+    except Exception:
+        return False
+
+
 @dataclass
 class ViewState:
     """视图状态：显示模式、缩放倍率与平移偏移。"""
@@ -482,31 +496,32 @@ def ImageViewerApp():
         1. Ctrl+滚轮：以鼠标位置为锚点缩放（向上放大、向下缩小）；
         2. 图片完全可见：向上翻上一张、向下翻下一张；
         3. 图片溢出视口：向上/向下滚动浏览图片区域（到边界即停，由 clamp 保证）。
-        dy>0 视为向上滚动。
+        Windows 实测滚轮上滚的 scroll_delta.y 为负值，故 dy<0 视为向上。
         """
         st = app.current
         dy = e.scroll_delta.y
         if dy == 0:
             return
+        ctrl = st.ctrl_held or _ctrl_pressed()   # 修饰键状态以系统查询为准
         w, h = img_wh
         vw, vh = st.viewport
         scale = _compute_scale(st.view, w, h, vw, vh)
-        if st.ctrl_held:
+        if ctrl:
             # Ctrl+滚轮：基于鼠标位置缩放
             loc = e.local_position
             cx = loc.x if loc is not None else vw / 2
             cy = loc.y if loc is not None else vh / 2
             _zoom_anchored(st.view, w, h, vw, vh, cx, cy,
-                           ZOOM_STEP if dy > 0 else 1 / ZOOM_STEP)
+                           ZOOM_STEP if dy < 0 else 1 / ZOOM_STEP)
             set_pan_xy((st.view.pan_x, st.view.pan_y))
             sync_ui()
         elif w * scale <= vw and h * scale <= vh:
-            # 图片完全在视野中：翻页
-            page.run_task(_goto, -1 if dy > 0 else 1)
+            # 图片完全在视野中：翻页（向上=上一张，向下=下一张）
+            page.run_task(_goto, -1 if dy < 0 else 1)
         else:
             # 图片溢出：滚动浏览（步长随滚轮幅度，边界处自动停止）
             step = max(60.0, vh * 0.12) * max(1.0, abs(dy) / 100.0)
-            st.view.pan_y += step if dy > 0 else -step
+            st.view.pan_y += step if dy < 0 else -step
             _clamp_pan(st.view, w, h, vw, vh, scale)
             set_pan_xy((st.view.pan_x, st.view.pan_y))
 
