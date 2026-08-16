@@ -190,7 +190,6 @@ def ImageViewerApp():
             info_str += f" · 动图 {st.manager.current_frame + 1}/{info['frames']}帧"
         set_file_name(info["name"])
         set_info_text(info_str if info["total"] else "")
-        set_page_text(f"{info['pos']} / {info['total']}" if info["total"] else "")
         set_fullscreen(st.fullscreen)
         set_slideshow_on(st.slideshow_on)
         set_paused(st.paused)
@@ -200,6 +199,18 @@ def ImageViewerApp():
         scale = _compute_scale(st.view, w, h, *st.viewport)
         _clamp_pan(st.view, w, h, *st.viewport, scale)
         set_pan_xy((st.view.pan_x, st.view.pan_y))
+        # 状态栏实时缩放百分比（像素级查看时确认当前倍率）
+        if st.view.mode == "fit":
+            zoom_label = f"{scale * 100:.0f}% 适应"
+        elif st.view.mode == "fit_width":
+            zoom_label = f"{scale * 100:.0f}% 适宽"
+        elif st.view.mode == "actual":
+            zoom_label = "100%"
+        else:
+            zoom_label = f"{st.view.zoom * 100:.0f}%"
+        set_page_text(
+            f"{info['pos']} / {info['total']} · {zoom_label}" if info["total"] else ""
+        )
         # 0.86.x 的 use_state 做浅比较：纯视图操作（适应窗口/1:1/缩放）的镜像
         # 状态可能全部相同而跳过重绘，这里用递增计数强制渲染一次
         set_render_tick(lambda t: t + 1)
