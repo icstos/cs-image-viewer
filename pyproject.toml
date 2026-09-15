@@ -1,0 +1,63 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "liteview"
+version = "0.1.0"
+description = "基于 Flet 的桌面端轻量看图软件（IrfanView 风格交互）"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "flet>=1.0.0",
+    "pillow>=10.4",
+    "send2trash>=1.8.3",
+]
+
+[project.optional-dependencies]
+heif = ["pillow-heif>=1.0"]
+raw = ["rawpy>=0.20"]
+svg = ["resvg>=0.2.0"]
+apng = ["apng>=0.3"]
+# 一次装齐全部特殊格式
+formats = ["liteview[heif,raw,svg,apng]"]
+# 仅用于打包（flet build 由 flet-cli 提供）
+build = ["flet-cli>=1.0.0"]
+
+[project.scripts]
+liteview = "main:run"
+
+[tool.setuptools]
+packages = ["viewer"]
+py-modules = ["main"]
+
+# ---------------------------------------------------------------------------
+# Flet 打包配置（flet build windows / macos / linux）
+# 注意：目录下若存在 requirements.txt，flet build 会优先读它而忽略本文件 —— 已移除。
+# ---------------------------------------------------------------------------
+[tool.flet]
+org = "com.liteview"
+product = "LiteView 看图"
+company = "LiteView"
+copyright = "Copyright (C) 2026 LiteView"
+build_number = 1
+
+[tool.flet.app]
+module = "main"
+path = "."
+exclude = [".cowork-temp/**", "dist/**", "**/__pycache__"]
+
+[tool.flet.compile]
+app = false
+packages = false
+cleanup = false
+
+[tool.flet.windows]
+artifact = "LiteView.exe"
+# flet build 只读取 project.dependencies，可选格式依赖需在此显式声明才会打进桌面包
+dependencies = [
+    "pillow-heif>=1.0",
+    "rawpy>=0.20",
+    "resvg>=0.2.0",
+    "apng>=0.3",
+]

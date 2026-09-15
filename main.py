@@ -46,9 +46,14 @@ async def main(page: ft.Page) -> None:
         print("[smoke] closed, exiting", flush=True)
 
 
-if __name__ == "__main__":
+def run() -> None:
+    """启动入口：`py -3.12 main.py` 与 `liteview` 控制台脚本共用。"""
     if os.environ.get("CSIV_WEB"):
         # 开发验证模式：以 Web 方式运行（同一套代码，便于截图/交互调试）
         ft.run(main, view=ft.AppView.WEB_BROWSER, port=8550)
     else:
         ft.run(main)
+
+
+if __name__ == "__main__":
+    run()

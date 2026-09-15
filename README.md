@@ -4,11 +4,38 @@
 
 ## 运行
 
+依赖与打包配置统一在 `pyproject.toml`（已不再使用 `requirements.txt`）。
+
 ```bash
-py -3.12 -m pip install -r requirements.txt
+py -3.12 -m pip install -e .              # 基础依赖
+py -3.12 -m pip install -e ".[formats]"   # 基础 + 全部特殊格式（HEIC/RAW/SVG/APNG）
 py -3.12 main.py                # 启动空窗口
 py -3.12 main.py <图片或文件夹>  # 启动并直接打开
+liteview                        # 安装后可直接用控制台脚本启动
 ```
+
+可选依赖分组：
+
+| 分组 | 内容 | 支持的格式 |
+| --- | --- | --- |
+| `heif` | pillow-heif | HEIC / HEIF |
+| `raw` | rawpy | 相机 RAW（CR2 / NEF / ARW / DNG 等） |
+| `svg` | resvg | SVG |
+| `apng` | apng | APNG 逐帧 |
+| `formats` | 以上全部 | — |
+| `build` | flet-cli | 仅打包用 |
+
+## 打包
+
+```bash
+py -3.12 -m pip install ".[build]"
+flet build windows            # 产物在 build/windows/
+```
+
+`flet build` 读取 `pyproject.toml`：`[project.dependencies]` 是运行时依赖，
+`[tool.flet.windows.dependencies]` 额外把特殊格式库一起打进桌面包
+（`flet build` 不会读取 `optional-dependencies`）。注意同一目录下若存在
+`requirements.txt`，会**优先于** `pyproject.toml` 被读取，因此不要恢复该文件。
 
 ## 快捷键（对齐 IrfanView 经典按键）
 
@@ -38,7 +65,7 @@ py -3.12 main.py <图片或文件夹>  # 启动并直接打开
 - 支持 JPG/PNG/BMP/GIF/WebP/TIFF/PSD 及相机 RAW（CR2/NEF/ARW/DNG 等）、SVG、HEIC/HEIF，目录内按文件名自然排序，首尾循环
 - 动图逐帧：GIF / 动态 WebP / APNG 自动播放，A 暂停/继续，[ / ] 逐帧预览（自动暂停），Ctrl+E 导出当前帧（含旋转/翻转）为 PNG，状态栏显示帧进度
 - 损坏文件自动跳过并提示；旋转/翻转仅作用于显示层，不修改原文件
-- 特殊格式依赖可选安装：`pip install pillow-heif rawpy resvg`，缺失时对应格式会提示安装
+- 特殊格式依赖可选安装：`pip install ".[formats]"`（或按需 `.[heif]` / `.[raw]` / `.[svg]` / `.[apng]`），缺失时对应格式会提示安装
 - 图片切换时异步解码 + 预加载前后各 1 张，切换丝滑不卡 UI
 - 适应窗口 / 适应宽度 / 1:1 一键切换；左键拖拽框选区域、在选区内单击可将该区域放大到填满视野；右键拖拽或滚轮滚动浏览（带边界限制）
 - 滚轮交互：图片完全可见时向上/向下翻页；图片放大溢出视口时向上/向下滚动浏览（到边界自动停止）；按住 Ctrl 滚轮则以鼠标所在位置为锚点缩放
@@ -48,8 +75,9 @@ py -3.12 main.py <图片或文件夹>  # 启动并直接打开
 ## 结构
 
 ```
-main.py                入口（支持命令行传入路径）
-viewer/
+pyproject.toml        依赖与打包配置（PEP 621 + [tool.flet]）
+main.py               入口（支持命令行传入路径）
+viewer/               应用包
   app.py               主界面组件（菜单栏、图片区、状态栏、事件分发）
   image_manager.py     图片管理器（扫描/排序/解码缓存/变换/编码）
   shortcuts.py         快捷键表与按键匹配

@@ -2,3 +2,6 @@ __pycache__/
 *.pyc
 .cowork-temp/
 build
+dist/
+*.egg-info/
+.venv/
