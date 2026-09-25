@@ -8,6 +8,9 @@
 from __future__ import annotations
 
 import asyncio
+import ctypes
+import os
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -159,6 +162,8 @@ def ImageViewerApp():
     _, set_render_tick = ft.use_state(0)   # 渲染计数：强制视图状态变化后重绘
     show_delete, set_show_delete = ft.use_state(False)
     snack, set_snack = ft.use_state(None)
+    assoc_action, set_assoc_action = ft.use_state(None)
+    assoc_status, set_assoc_status = ft.use_state(None)
 
     picker_ref = ft.use_ref(None)                  # FilePicker 服务（首帧注册）
     if picker_ref.current is None:
@@ -459,6 +464,65 @@ def ImageViewerApp():
             toast(f"已导出：{Path(path).name}")
         except Exception as exc:
             toast(f"导出失败：{exc}")
+
+    def act_file_assoc_install(_e=None) -> None:
+        set_assoc_action("install")
+
+    def act_file_assoc_uninstall(_e=None) -> None:
+        set_assoc_action("uninstall")
+
+    def act_file_assoc_status(_e=None) -> None:
+        page.run_task(_load_file_assoc_status)
+
+    async def _load_file_assoc_status() -> None:
+        if os.name != "nt":
+            toast("文件关联仅适用于 Windows")
+            return
+
+        def read_status() -> str:
+            from . import file_assoc
+
+            return file_assoc.status_text()
+
+        try:
+            status_text = await asyncio.get_running_loop().run_in_executor(
+                None, read_status
+            )
+        except Exception as exc:
+            toast(f"读取文件关联状态失败：{exc}")
+            return
+        set_assoc_status(status_text)
+
+    async def _run_file_assoc(action: str) -> None:
+        set_assoc_action(None)
+        if os.name != "nt":
+            toast("文件关联仅适用于 Windows")
+            return
+
+        def operate() -> None:
+            from . import file_assoc
+
+            buffer = ctypes.create_unicode_buffer(32768)
+            length = ctypes.windll.kernel32.GetModuleFileNameW(
+                None, buffer, len(buffer)
+            )
+            if not length:
+                raise RuntimeError("无法获取当前程序 exe 路径")
+            exe = Path(buffer.value).resolve()
+            if exe.suffix.lower() != ".exe" or not exe.is_file():
+                raise RuntimeError(f"当前程序不是有效的 exe：{exe}")
+            if action == "install":
+                file_assoc.install(exe, verbose=False)
+            else:
+                file_assoc.uninstall(verbose=False)
+
+        try:
+            await asyncio.get_running_loop().run_in_executor(None, operate)
+        except (Exception, SystemExit) as exc:
+            message = str(exc) or exc.__class__.__name__
+            toast(f"文件关联设置失败：{message}")
+            return
+        toast("已注册 LiteView 文件关联" if action == "install" else "已取消 LiteView 文件关联")
 
     def set_interval(seconds: float) -> None:
         app.current.interval = seconds
@@ -870,6 +934,14 @@ def ImageViewerApp():
         controls=[
             _menu_item("打开图片", act_open_file, ft.Icons.IMAGE, "Ctrl+O"),
             _menu_item("打开文件夹", act_open_folder, ft.Icons.FOLDER_OPEN, "Ctrl+Shift+O"),
+            ft.SubmenuButton(
+                content=ft.Text("文件关联", size=13),
+                controls=[
+                    _menu_item("注册为图片打开方式", act_file_assoc_install, ft.Icons.LINK),
+                    _menu_item("取消文件关联", act_file_assoc_uninstall, ft.Icons.LINK_OFF),
+                    _menu_item("查看关联状态", act_file_assoc_status, ft.Icons.INFO_OUTLINE),
+                ],
+            ),
             _menu_item("停止播放" if slideshow_on else "幻灯片播放", act_slideshow, ft.Icons.SLIDESHOW, "S"),
             _menu_item("继续" if paused else "暂停", act_pause, ft.Icons.PAUSE_CIRCLE, "P"),
             ft.SubmenuButton(
@@ -935,6 +1007,40 @@ def ImageViewerApp():
             on_dismiss=lambda _e: set_show_delete(False),
         )
         if show_delete
+        else None
+    )
+
+    ft.use_dialog(
+        ft.AlertDialog(
+            modal=True,
+            title=ft.Text("文件关联状态"),
+            content=ft.Text(assoc_status or ""),
+            actions=[
+                ft.TextButton("关闭", on_click=lambda _e: set_assoc_status(None)),
+            ],
+        )
+        if assoc_status is not None
+        else None
+    )
+
+    ft.use_dialog(
+        ft.AlertDialog(
+            modal=True,
+            title=ft.Text("文件关联"),
+            content=ft.Text(
+                "将 LiteView 注册到 Windows 图片文件的“打开方式”和右键菜单。"
+                if assoc_action == "install"
+                else "将撤销 LiteView 写入的文件关联和右键菜单。"
+            ),
+            actions=[
+                ft.Button(
+                    "注册" if assoc_action == "install" else "取消关联",
+                    on_click=lambda _e: page.run_task(_run_file_assoc, assoc_action),
+                ),
+                ft.TextButton("取消", on_click=lambda _e: set_assoc_action(None)),
+            ],
+        )
+        if assoc_action
         else None
     )
     ft.use_dialog(snack)

@@ -26,6 +26,7 @@ build = ["flet-cli>=1.0.0"]
 
 [project.scripts]
 liteview = "main:run"
+liteview-assoc = "viewer.file_assoc:main"   # Windows“打开方式”文件关联注册工具
 
 [tool.setuptools]
 packages = ["viewer"]

@@ -12,6 +12,7 @@ py -3.12 -m pip install -e ".[formats]"   # 基础 + 全部特殊格式（HEIC/R
 py -3.12 main.py                # 启动空窗口
 py -3.12 main.py <图片或文件夹>  # 启动并直接打开
 liteview                        # 安装后可直接用控制台脚本启动
+liteview-assoc                  # “打开方式”文件关联注册工具（见下）
 ```
 
 可选依赖分组：
@@ -36,6 +37,48 @@ flet build windows            # 产物在 build/windows/
 `[tool.flet.windows.dependencies]` 额外把特殊格式库一起打进桌面包
 （`flet build` 不会读取 `optional-dependencies`）。注意同一目录下若存在
 `requirements.txt`，会**优先于** `pyproject.toml` 被读取，因此不要恢复该文件。
+
+## 文件关联（右键“打开方式” / 设为默认看图程序）
+
+```bash
+flet build windows                        # 产物在 build/windows/
+py -3.12 -m viewer.file_assoc install     # 注册“打开方式”+ 右键菜单（免管理员）
+py -3.12 -m viewer.file_assoc status      # 查看当前关联状态
+py -3.12 -m viewer.file_assoc uninstall   # 全部撤销
+```
+
+全部写在 `HKCU`，不需要管理员权限。注册内容：34 种图片格式的 `OpenWithProgids`、
+`Applications\<exe>`、系统“默认应用”条目（`Capabilities`），以及图片 / 文件夹 /
+文件夹空白处的“用 LiteView 打开”右键菜单。
+
+注册后：右键任意图片 → 打开方式 → 选择其他应用 → **LiteView 看图** →
+勾选“始终使用此应用”，之后双击即可直接打开。（Windows 10/11 的默认程序由带校验哈希的
+`UserChoice` 保护，任何程序都无法静默改默认，必须用户点这一次；`--set-default` 只能
+在系统尚未记录 `UserChoice` 时生效。）
+
+### 为什么关联命令不能写成 `"LiteView.exe" "%1"`
+
+`flet build` 的产物是 Flutter/Dart 外壳 + 内嵌 CPython，它的 Dart 入口会把**任何命令行参数**
+当成“开发模式”的页面地址（见 `build/flutter/lib/main.dart`）：
+
+```dart
+} else if (_args.isNotEmpty && isDesktopPlatform()) {
+    pageUrl = _args[0];        // 开发模式：模板会去连接这个 URL
+}
+```
+
+实测 `LiteView.exe D:\a.jpg`：`main.py` 一行都不会执行，窗口停在启动页且进程永不退出。
+这是 Flet 打包版的已知行为，与 Python 代码无关。
+
+因此关联命令指向一个**启动器**，由它把路径写进 `LITEVIEW_OPEN` 环境变量
+（另加一份短时效请求文件作兜底），再以**无参数**方式启动 exe —— 无参数 ⇒ 走生产模式 ⇒
+Python 才会真正启动。`main.py` 按 `env → 请求文件 → argv` 顺序解析启动路径，所以
+`py -3.12 main.py <图片>` 的开发用法完全不受影响。
+
+启动器落在 `%LOCALAPPDATA%\LiteView\`（不在 `build/` 内），exe 路径记录在同目录的
+`app-exe.txt`：**重建 `build/` 不会让关联失效**，只有 exe 被移动或换名才需要重跑一次
+`install`（`flet build` 后跑一次即可）。启动器默认是 wscript 承载的 `.vbs`（无控制台闪窗）；
+若系统禁用了 VBScript，用 `--launcher cmd` 换成 `.cmd` 版本（会有一次控制台闪窗）。
 
 ## 快捷键（对齐 IrfanView 经典按键）
 
@@ -76,11 +119,12 @@ flet build windows            # 产物在 build/windows/
 
 ```
 pyproject.toml        依赖与打包配置（PEP 621 + [tool.flet]）
-main.py               入口（支持命令行传入路径）
+main.py               入口（启动路径：LITEVIEW_OPEN 环境变量 / 请求文件 / 命令行参数）
 viewer/               应用包
   app.py               主界面组件（菜单栏、图片区、状态栏、事件分发）
   image_manager.py     图片管理器（扫描/排序/解码缓存/变换/编码）
   shortcuts.py         快捷键表与按键匹配
+  file_assoc.py        Windows 文件关联（“打开方式”）注册工具
 ```
 
 ## 说明
