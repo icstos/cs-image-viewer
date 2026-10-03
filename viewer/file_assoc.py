@@ -24,9 +24,13 @@
 默认启动器是 wscript 承载的 `.vbs`：无控制台闪窗、零额外依赖、纯 ASCII 内容；
 若系统禁用了 VBScript，可用 `--launcher cmd` 换成 `.cmd`（会有一次控制台闪窗）。
 
-启动器落在 `%LOCALAPPDATA%\\LiteView`（稳定目录），exe 路径记录在同目录的
-`app-exe.txt` 里 —— 因此 `flet build` 重建 `build/` 之后关联依然有效，无需重新
-注册；只有**移动了 exe** 才需要重跑一次 `install`。
+**exe 叫什么名字都可以**：启动器脚本里不出现 exe 名称，exe 全路径只写进同目录的
+`app-exe.txt`（vbs 模式 = UTF-16，cmd 模式 = UTF-8 + `chcp 65001`），因此
+`图片查看器.exe` 这类含非 ASCII 字符的名字同样可用。
+
+启动器落在 `%LOCALAPPDATA%\\LiteView`（稳定目录）—— 因此 `flet build` 重建
+`build/` 之后关联依然有效，无需重新注册；只有**移动或改名了 exe** 才需要重跑
+一次 `install`。
 
 注册范围（全部写在 HKCU，**不需要管理员权限**）
 ----------------------------------------------------
@@ -40,6 +44,7 @@
 
     py -3.12 -m viewer.file_assoc install              # 注册（自动探测 build/windows）
     py -3.12 -m viewer.file_assoc install --exe "D:\\app\\LiteView.exe"
+    py -3.12 -m viewer.file_assoc install --exe "build\\windows\\图片查看器.exe"  # 中文名同样可用
     py -3.12 -m viewer.file_assoc install --set-default # 同时把默认打开方式设为 LiteView
     py -3.12 -m viewer.file_assoc status                # 查看当前关联状态
     py -3.12 -m viewer.file_assoc uninstall             # 全部撤销
@@ -89,8 +94,10 @@ _FALLBACK_EXTS = (
 
 
 # ---------------------------------------------------------------------------
-# 启动器模板（内容保持纯 ASCII：避开 .vbs/.cmd 的编码探测问题）
-# 用 string.Template 而非 str.format：模板里含 Dart 花括号代码片段。
+# 启动器模板
+#   * 内容保持纯 ASCII，且**不嵌入 exe 名称**（exe 路径走 app-exe.txt），
+#     因此 exe 名可以是中文等非 ASCII 字符；
+#   * 用 string.Template 而非 str.format：模板里含 Dart 花括号代码片段。
 # ---------------------------------------------------------------------------
 VBS_TEMPLATE = """' LiteView -- "Open with" launcher (auto-generated, do not edit)
 '
@@ -98,16 +105,21 @@ VBS_TEMPLATE = """' LiteView -- "Open with" launcher (auto-generated, do not edi
 ' whose Dart entrypoint treats ANY command-line argument as a "developer mode"
 ' page URL:
 '     if (_args.isNotEmpty && isDesktopPlatform()) { pageUrl = _args[0]; }
-' So `$exe_name "D:\\a.jpg"` never starts the embedded Python program (the
-' window just hangs on the boot screen). Windows file associations can only
-' forward the selected file on the command line, so this launcher hands it over
-' through the $open_env environment variable (plus a short-lived request file as
-' a fallback) and starts the exe with NO arguments -- no arguments means
-' production mode, which is the only mode where Python actually runs.
+' So `<exe> "D:\\a.jpg"` never starts the embedded Python program (the window
+' just hangs on the boot screen). Windows file associations can only forward the
+' selected file on the command line, so this launcher hands it over through the
+' $open_env environment variable (plus a short-lived request file as a fallback)
+' and starts the exe with NO arguments -- no arguments means production mode,
+' which is the only mode where Python actually runs.
+'
+' The application path is read from $exe_config instead of being embedded below:
+' that keeps this script pure ASCII, so the exe may carry any name -- including
+' non-ASCII ones such as Chinese. TristateTrue (-1) makes WSH decode that file
+' as UTF-16, which round-trips any Windows path losslessly.
 '
 ' This file lives in a stable folder (%LOCALAPPDATA%\\$launcher_dir) rather than
 ' inside the build output, so rebuilding the app does not break the association.
-' The exe location is read from $exe_config, refreshed by:
+' Refresh the recorded path with:
 '     py -3.12 -m viewer.file_assoc install
 Option Explicit
 
@@ -165,11 +177,25 @@ rem See $vbs for why the file path is forwarded through $open_env instead of a
 rem command-line argument. `set` + `start` is plain Win32 env inheritance, so no
 rem request file is needed here; the only downside of this variant is the brief
 rem console window it flashes.
+rem
+rem The application path lives in $exe_config and this script stays pure ASCII,
+rem so any exe name works -- `chcp 65001` makes cmd decode the UTF-8 config
+rem below correctly (verified on Windows 10/11).
 setlocal
+chcp 65001 >nul
 set "$open_env=%~1"
+
 set "EXE="
-if exist "%~dp0$exe_config" for /f "usebackq delims=" %%i in ("%~dp0$exe_config") do set "EXE=%%i"
-if "%EXE%"=="" set "EXE=%~dp0$exe_name"
+if exist "%~dp0$exe_config" < "%~dp0$exe_config" set /p "EXE="
+rem A stale config (app moved or deleted) is treated as "not configured".
+if defined EXE if not exist "%EXE%" set "EXE="
+if not defined EXE for %%f in ("%~dp0*.exe") do if not defined EXE set "EXE=%%~ff"
+if not defined EXE (
+    echo LiteView: the application executable was not found.
+    echo Re-run: py -3.12 -m viewer.file_assoc install
+    exit /b 1
+)
+
 start "" "%EXE%"
 """
 
@@ -187,8 +213,35 @@ def image_extensions() -> list[str]:
         return sorted(_FALLBACK_EXTS)
 
 
+def _declared_artifact_names(repo: Path) -> list[str]:
+    """从 pyproject.toml 读出 flet 声明的产物名（可能含中文等非 ASCII 字符）。
+
+    对应 `[tool.flet.windows].artifact` / `[tool.flet].artifact`，与
+    `flet_cli` 决定 exe 文件名时的优先级一致。
+    """
+    try:
+        import tomllib
+
+        data = tomllib.loads((repo / "pyproject.toml").read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    flet = data.get("tool", {}).get("flet", {})
+    if not isinstance(flet, dict):
+        return []
+    windows = flet.get("windows", {})
+    names = [
+        (windows.get("artifact") if isinstance(windows, dict) else None),
+        flet.get("artifact"),
+    ]
+    return [n for n in names if isinstance(n, str) and n]
+
+
 def resolve_exe(explicit: str | None = None) -> Path:
-    """定位打包好的 exe。"""
+    """定位打包好的 exe。
+
+    依次尝试：pyproject 声明的产物名 → 常见英文名 → 目录里唯一的 exe。
+    第三条是给“产物名完全自定义（含中文）”准备的兜底。
+    """
     if explicit:
         exe = Path(explicit).expanduser()
         if not exe.is_file():
@@ -196,13 +249,42 @@ def resolve_exe(explicit: str | None = None) -> Path:
         return exe.resolve()
 
     repo = Path(__file__).resolve().parent.parent
+    roots = [repo / "build" / "windows", repo / "dist", repo / "build"]
     tried: list[Path] = []
-    for sub in ("build/windows", "dist", "build"):
-        for name in EXE_CANDIDATES:
-            cand = repo / sub / name
-            tried.append(cand)
-            if cand.is_file():
-                return cand
+
+    def _probe(name: str) -> Path | None:
+        # pyproject 里的 artifact 可能写成 "LiteView"（不带扩展名），两种都试。
+        variants = [name] if name.lower().endswith(".exe") else [f"{name}.exe", name]
+        for root in roots:
+            for variant in variants:
+                cand = root / variant
+                tried.append(cand)
+                if cand.is_file():
+                    return cand.resolve()
+        return None
+
+    for name in _declared_artifact_names(repo):
+        if (found := _probe(name)) is not None:
+            return found
+    for name in EXE_CANDIDATES:
+        if (found := _probe(name)) is not None:
+            return found
+
+    # 兜底：产物目录里只有一个 exe 就用它；多个则取最新并给出提示。
+    for root in roots:
+        if not root.is_dir():
+            continue
+        found = [p for p in root.glob("*.exe") if p.is_file()]
+        if len(found) == 1:
+            return found[0].resolve()
+        if found:
+            newest = max(found, key=lambda p: p.stat().st_mtime)
+            print(
+                f"提示：{root} 下有 {len(found)} 个 exe，已选用最新的 {newest.name}；"
+                "如需指定请用 --exe。"
+            )
+            return newest.resolve()
+
     raise SystemExit(
         "未找到打包产物，请用 --exe 指定 exe 的完整路径。已尝试：\n  "
         + "\n  ".join(str(p) for p in tried)
@@ -228,45 +310,60 @@ def default_launcher_dir() -> Path:
 
 
 def write_launcher(launcher_dir: Path, exe: Path, mode: str = "vbs") -> Path:
-    """在启动器目录写好启动器与 exe 路径配置，返回启动器路径。"""
-    if not exe.name.isascii():
-        raise SystemExit(
-            f"exe 文件名 {exe.name!r} 含非 ASCII 字符，启动器无法可靠处理。\n"
-            "请把 pyproject.toml 的 [tool.flet.windows].artifact 保持为纯英文名。"
-        )
+    """在启动器目录写好启动器与 exe 路径配置，返回启动器路径。
+
+    exe 全路径**只**写进配置文件，脚本内容不含任何 exe 名称 —— 脚本因此永远是
+    纯 ASCII，exe 叫 `LiteView.exe` 还是 `图片查看器.exe` 都不影响编码安全。
+    """
+    exe = Path(exe).resolve()
     launcher_dir.mkdir(parents=True, exist_ok=True)
 
-    # exe 路径配置：vbs 用 UTF-16（WSH 原生支持、可承载中文路径），
-    # cmd 用系统 ANSI（cmd 的 for/f 按控制台代码页解码，UTF-8 会乱码）。
-    cfg = launcher_dir / EXE_CONFIG
-    if mode == "cmd":
-        cfg.write_text(str(exe), encoding="mbcs", errors="replace")
-    else:
-        cfg.write_text(str(exe), encoding="utf-16")
+    # 配置文件编码跟随读取方：
+    #   vbs → UTF-16（WSH 的 TristateTrue 直读，任意路径无损）
+    #   cmd → UTF-8（脚本里已 chcp 65001，`set /p` 按 65001 解码）
+    (launcher_dir / EXE_CONFIG).write_bytes(
+        str(exe).encode("utf-8" if mode == "cmd" else "utf-16")
+    )
 
     if mode == "cmd":
         launcher = launcher_dir / LAUNCHER_CMD
         text = Template(CMD_TEMPLATE).substitute(
-            vbs=LAUNCHER_VBS,
-            exe_name=exe.name,
-            exe_config=EXE_CONFIG,
-            open_env=OPEN_ENV,
+            vbs=LAUNCHER_VBS, exe_config=EXE_CONFIG, open_env=OPEN_ENV
         )
     else:
         launcher = launcher_dir / LAUNCHER_VBS
         text = Template(VBS_TEMPLATE).substitute(
-            exe_name=exe.name,
             exe_config=EXE_CONFIG,
             open_env=OPEN_ENV,
             request_file=REQUEST_FILE,
             launcher_dir=LAUNCHER_DIR_NAME,
         )
 
-    # write_bytes avoids Windows text-mode newline conversion. Using
-    # write_text after replacing newlines would produce CRCRLF and break
-    # VBScript continuation lines.
+    # write_bytes 避免 Windows 文本模式的换行转换：write_text 会把 \n 变成
+    # CRCRLF，破坏 VBScript 的续行符（`_` 行尾）。脚本必须是纯 ASCII —— 这是
+    # 上面“不嵌入 exe 名称”设计的直接结果，encode 失败即说明模板被改坏了。
     launcher.write_bytes(text.replace("\n", "\r\n").encode("ascii"))
     return launcher
+
+
+def read_exe_config(launcher_dir: Path | None = None) -> str:
+    """读回启动器配置里记录的 exe 全路径（缺失/损坏返回空串）。
+
+    vbs 模式写的是 UTF-16、cmd 模式写的是 UTF-8，用 BOM 区分，避免瞎猜编码。
+    """
+    cfg = (launcher_dir or default_launcher_dir()) / EXE_CONFIG
+    try:
+        raw = cfg.read_bytes()
+    except OSError:
+        return ""
+    if raw[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        text = raw.decode("utf-16", errors="replace")
+    else:
+        text = raw.decode("utf-8-sig", errors="replace")
+    text = text.strip().strip('"')
+    if not text or Path(text).suffix.lower() != ".exe":
+        return ""
+    return text
 
 
 def launcher_command(launcher: Path, mode: str, arg: str = "%1") -> str:
@@ -364,6 +461,56 @@ def _delete_value(path: str, name: str | None = None) -> None:
             winreg.DeleteValue(k, name)
     except OSError:
         pass
+
+
+def _is_our_command(command: str | None) -> bool:
+    """命令行是否指向本工具生成的启动器（据此认出自己写过的注册表项）。"""
+    lowered = (command or "").lower()
+    return LAUNCHER_VBS in lowered or LAUNCHER_CMD in lowered
+
+
+def _our_app_keys() -> list[tuple[str, str]]:
+    """扫描 HKCU\\Software\\Classes\\Applications，返回 (键名, 启动命令) 。
+
+    以“命令指向本启动器”为判据，而不是靠固定文件名 —— 这样 exe 改名（含中文）
+    之后依然能被正确识别和清理。
+    """
+    import winreg
+
+    root = rf"{CLASSES}\Applications"
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, root, 0, winreg.KEY_READ) as k:
+            names: list[str] = []
+            i = 0
+            while True:
+                try:
+                    names.append(winreg.EnumKey(k, i))
+                    i += 1
+                except OSError:
+                    break
+    except OSError:
+        return []
+
+    found: list[tuple[str, str]] = []
+    for name in names:
+        command = _read(rf"{root}\{name}\shell\open\command")
+        if _is_our_command(command):
+            found.append((name, command or ""))
+    return found
+
+
+def _registered_exe_names() -> list[str]:
+    """本工具可能写进 `Applications\\` 的键名：候选名 + 配置里记录的实际名。"""
+    names = list(EXE_CANDIDATES)
+    configured = read_exe_config()
+    if configured:
+        name = Path(configured).name
+        if name not in names:
+            names.append(name)
+    for name, _ in _our_app_keys():
+        if name not in names:
+            names.append(name)
+    return names
 
 
 def _notify_shell() -> None:
@@ -480,8 +627,9 @@ def uninstall(remove_launcher: bool = True, verbose: bool = True) -> None:
     if _delete_tree(rf"Software\LiteView"):
         removed.append(r"HKCU\Software\LiteView")
 
-    # Applications\<exe>：逐个候选名清理
-    for name in EXE_CANDIDATES:
+    # Applications\<exe>：候选名 + 配置里记录的实际名 + 扫描“命令指向本启动器”的键
+    # （exe 可能被改名成中文，不能只靠固定候选名）
+    for name in _registered_exe_names():
         if _delete_tree(rf"{CLASSES}\Applications\{name}"):
             removed.append(rf"HKCU\{CLASSES}\Applications\{name}")
 
@@ -533,22 +681,17 @@ def status_text() -> str:
     exts = image_extensions()
     linked = [e for e in exts if _read(rf"{CLASSES}\{e}\OpenWithProgids", PROGID) is not None]
     registered = _read(rf"Software\RegisteredApplications", FRIENDLY_NAME)
-    exe = None
-    for name in EXE_CANDIDATES:
-        cmd = _read(rf"{CLASSES}\Applications\{name}\shell\open\command")
-        if cmd:
-            exe = (name, cmd)
-            break
+    # 不依赖固定文件名：按“命令指向本启动器”反查 AppKey，中文 exe 名也能认出来
+    ours = _our_app_keys()
 
     lines = [
         f"ProgID        {PROGID}  {_read(rf'{CLASSES}\\{PROGID}') or '（未注册）'}",
-        f"注册表 AppKey {exe[0] if exe else '（未注册）'}",
+        f"注册表 AppKey {ours[0][0] if ours else '（未注册）'}",
     ]
-    if exe:
-        lines.append(f"启动命令      {exe[1]}")
+    if ours:
+        lines.append(f"启动命令      {ours[0][1]}")
     lines.append(f"默认应用条目  {registered or '（未注册）'}")
-    cfg = default_launcher_dir() / EXE_CONFIG
-    target = cfg.read_text(encoding="utf-16", errors="replace").strip() if cfg.is_file() else ""
+    target = read_exe_config()
     lines.extend([
         f"启动器目录    {default_launcher_dir()}",
         f"exe 指向      {target or '（未记录）'}",
@@ -583,7 +726,10 @@ def build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="action")
 
     def add_common(sp: argparse.ArgumentParser) -> None:
-        sp.add_argument("--exe", help="打包产物 exe 的路径（默认自动探测 build/windows）")
+        sp.add_argument(
+            "--exe",
+            help="打包产物 exe 的路径（默认按 pyproject 的 artifact 名自动探测 build/windows）",
+        )
 
     inst = sub.add_parser("install", help="注册文件关联（默认动作）")
     add_common(inst)
