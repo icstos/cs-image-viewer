@@ -1,10 +1,10 @@
-"""LiteView 看图 - 基于 Flet 的桌面端轻量看图软件入口。
+"""ImageViewer - 基于 Flet 的桌面端轻量看图软件入口。
 
 运行：
     py -3.12 main.py
     py -3.12 main.py <图片或文件夹>
 
-打包后由文件关联（“打开方式”）启动时，路径通过 `LITEVIEW_OPEN` 环境变量传入，
+打包后由文件关联（“打开方式”）启动时，路径通过 `IMAGEVIEWER_OPEN` 环境变量传入，
 详见 `viewer/file_assoc.py` 顶部的说明。
 """
 from __future__ import annotations
@@ -21,8 +21,8 @@ from viewer import app as app_module
 from viewer.app import ImageViewerApp
 
 # 文件关联启动器写入的通道（与 viewer/file_assoc.py 保持一致）
-OPEN_ENV = "LITEVIEW_OPEN"
-REQUEST_FILE = Path(os.environ.get("LOCALAPPDATA", "")) / "LiteView" / "open-request.txt"
+OPEN_ENV = "IMAGEVIEWER_OPEN"
+REQUEST_FILE = Path(os.environ.get("LOCALAPPDATA", "")) / "ImageViewer" / "open-request.txt"
 REQUEST_MAX_AGE = 15.0  # 秒：超过视为上次残留，直接丢弃
 
 
@@ -51,12 +51,12 @@ def _resolve_start_path() -> tuple[str | None, str]:
 
     三条通道，按优先级：
 
-    1. `LITEVIEW_OPEN` 环境变量 —— 打包后“打开方式”的主通道。
+    1. `IMAGEVIEWER_OPEN` 环境变量 —— 打包后“打开方式”的主通道。
        `flet build` 产物的 Dart 外壳会把任何命令行参数当成“开发模式”的页面地址，
        关联命令直接传 `"%1"` 会导致 Python 端完全不启动，因此改由启动器写环境变量
        并以无参数方式拉起 exe。
     2. 请求文件 —— 同一启动器的兜底通道（环境变量被系统策略拦截时仍可用）。
-    3. 命令行参数 —— 开发期 `py -3.12 main.py <路径>` 及控制台脚本 `liteview <路径>`。
+    3. 命令行参数 —— 开发期 `py -3.12 main.py <路径>` 及控制台脚本 `imageviewer <路径>`。
 
     不存在的路径直接跳过（关联表里的历史记录可能已指向被删除的文件）。
     """
@@ -75,7 +75,7 @@ def _resolve_start_path() -> tuple[str | None, str]:
 
 
 async def main(page: ft.Page) -> None:
-    page.title = "LiteView 看图"
+    page.title = "ImageViewer"
     page.bgcolor = "#141414"
     page.padding = 0
     # 在 render 前捕获初始客户端尺寸（0.86.x 的 page.width/height 可能陈旧）
@@ -111,7 +111,7 @@ async def main(page: ft.Page) -> None:
 
 
 def run() -> None:
-    """启动入口：`py -3.12 main.py` 与 `liteview` 控制台脚本共用。"""
+    """启动入口：`py -3.12 main.py` 与 `imageviewer` 控制台脚本共用。"""
     if os.environ.get("CSIV_WEB"):
         # 开发验证模式：以 Web 方式运行（同一套代码，便于截图/交互调试）
         ft.run(main, view=ft.AppView.WEB_BROWSER, port=8550)

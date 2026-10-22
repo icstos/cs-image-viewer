@@ -1,4 +1,4 @@
-"""LiteView 看图 - 主界面（声明式 Flet 组件）。
+"""ImageViewer - 主界面（声明式 Flet 组件）。
 
 结构：
     ImageViewerApp  根组件：顶部菜单栏 + 图片浏览区 + 底部状态栏
@@ -522,7 +522,7 @@ def ImageViewerApp():
             message = str(exc) or exc.__class__.__name__
             toast(f"文件关联设置失败：{message}")
             return
-        toast("已注册 LiteView 文件关联" if action == "install" else "已取消 LiteView 文件关联")
+        toast("已注册 ImageViewer 文件关联" if action == "install" else "已取消 ImageViewer 文件关联")
 
     def set_interval(seconds: float) -> None:
         app.current.interval = seconds
@@ -1028,9 +1028,9 @@ def ImageViewerApp():
             modal=True,
             title=ft.Text("文件关联"),
             content=ft.Text(
-                "将 LiteView 注册到 Windows 图片文件的“打开方式”和右键菜单。"
+                "将 ImageViewer 注册到 Windows 图片文件的“打开方式”和右键菜单。"
                 if assoc_action == "install"
-                else "将撤销 LiteView 写入的文件关联和右键菜单。"
+                else "将撤销 ImageViewer 写入的文件关联和右键菜单。"
             ),
             actions=[
                 ft.Button(

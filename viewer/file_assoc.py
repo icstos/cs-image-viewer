@@ -1,6 +1,6 @@
 """Windows 文件关联（“打开方式”）注册工具。
 
-为什么不能直接用 `"LiteView.exe" "%1"`
+为什么不能直接用 `"ImageViewer.exe" "%1"`
 ----------------------------------------------------
 `flet build` 产出的 exe 不是普通的 Python 打包程序，而是 Flutter/Dart 外壳 +
 内嵌 CPython。它的 Dart 入口会把**任何命令行参数**当成“开发模式”的页面地址::
@@ -10,13 +10,13 @@
         pageUrl = _args[0];            // 开发模式：去连接这个 URL
     }
 
-实测 `LiteView.exe D:\\a.jpg`：Python 端一行都不会执行（main.py 没跑），窗口停在
+实测 `ImageViewer.exe D:\\a.jpg`：Python 端一行都不会执行（main.py 没跑），窗口停在
 启动页且进程永不退出。也就是说 Windows 标准的 `"app.exe" "%1"` 关联写法在这里
 **必然失败**。
 
 解决办法（本模块）
 ----------------------------------------------------
-关联命令指向一个“启动器”，由它把文件路径写进环境变量 `LITEVIEW_OPEN`
+关联命令指向一个“启动器”，由它把文件路径写进环境变量 `IMAGEVIEWER_OPEN`
 （并额外落一份短时效请求文件作为兜底），再以 **无参数**方式启动 exe
 （无参数 ⇒ Dart 走生产模式 ⇒ 内嵌 Python 正常启动）。应用侧
 `main.py::_resolve_start_path()` 按 env → 请求文件 → 命令行参数 的顺序解析。
@@ -28,29 +28,29 @@
 `app-exe.txt`（vbs 模式 = UTF-16，cmd 模式 = UTF-8 + `chcp 65001`），因此
 `图片查看器.exe` 这类含非 ASCII 字符的名字同样可用。
 
-启动器落在 `%LOCALAPPDATA%\\LiteView`（稳定目录）—— 因此 `flet build` 重建
+启动器落在 `%LOCALAPPDATA%\\ImageViewer`（稳定目录）—— 因此 `flet build` 重建
 `build/` 之后关联依然有效，无需重新注册；只有**移动或改名了 exe** 才需要重跑
 一次 `install`。
 
 注册范围（全部写在 HKCU，**不需要管理员权限**）
 ----------------------------------------------------
-* ProgID `LiteView.Image` + `shell\\open\\command` → 启动器
+* ProgID `ImageViewer.Image` + `shell\\open\\command` → 启动器
 * 每个扩展名的 `OpenWithProgids` → 出现在右键“打开方式”列表
 * `Applications\\<exe>` → 出现在“选择其他应用”列表
 * `Capabilities` + `RegisteredApplications` → 出现在系统“默认应用”设置页
-* 右键菜单：图片文件 / 文件夹（含文件夹空白处）追加“用 LiteView 打开”
+* 右键菜单：图片文件 / 文件夹（含文件夹空白处）追加“用 ImageViewer 打开”
 
 用法::
 
     py -3.12 -m viewer.file_assoc install              # 注册（自动探测 build/windows）
-    py -3.12 -m viewer.file_assoc install --exe "D:\\app\\LiteView.exe"
+    py -3.12 -m viewer.file_assoc install --exe "D:\\app\\ImageViewer.exe"
     py -3.12 -m viewer.file_assoc install --exe "build\\windows\\图片查看器.exe"  # 中文名同样可用
-    py -3.12 -m viewer.file_assoc install --set-default # 同时把默认打开方式设为 LiteView
+    py -3.12 -m viewer.file_assoc install --set-default # 同时把默认打开方式设为 ImageViewer
     py -3.12 -m viewer.file_assoc status                # 查看当前关联状态
     py -3.12 -m viewer.file_assoc uninstall             # 全部撤销
 
 注意：Windows 10/11 的默认打开方式由 `UserChoice`（带校验哈希）保护，任何程序都
-无法可靠地“静默改默认”。因此 `install` 只是把 LiteView 注册进“打开方式”列表，
+无法可靠地“静默改默认”。因此 `install` 只是把 ImageViewer 注册进“打开方式”列表，
 用户点一次“始终使用此应用”即可；这正是系统推荐的交互。
 """
 from __future__ import annotations
@@ -66,22 +66,22 @@ from string import Template
 # ---------------------------------------------------------------------------
 # 常量
 # ---------------------------------------------------------------------------
-OPEN_ENV = "LITEVIEW_OPEN"  # 启动器 → 应用 的环境变量通道（与 main.py 保持一致）
-LAUNCHER_DIR_NAME = "LiteView"  # %LOCALAPPDATA%\LiteView：启动器与请求文件的稳定落点
+OPEN_ENV = "IMAGEVIEWER_OPEN"  # 启动器 → 应用 的环境变量通道（与 main.py 保持一致）
+LAUNCHER_DIR_NAME = "ImageViewer"  # %LOCALAPPDATA%\ImageViewer：启动器与请求文件的稳定落点
 REQUEST_FILE = "open-request.txt"  # 启动器 → 应用 的兜底请求文件（短时效）
-PROGID = "LiteView.Image"
-FRIENDLY_NAME = "LiteView 看图"
-TYPE_NAME = "LiteView 图片"
+PROGID = "ImageViewer.Image"
+FRIENDLY_NAME = "ImageViewer"
+TYPE_NAME = "ImageViewer 图片"
 APP_DESCRIPTION = "轻量、键盘友好的看图工具（IrfanView 风格）"
-CAPABILITIES_KEY = r"Software\LiteView\Capabilities"
+CAPABILITIES_KEY = r"Software\ImageViewer\Capabilities"
 CLASSES = r"Software\Classes"
 
-LAUNCHER_VBS = "liteview-open.vbs"
-LAUNCHER_CMD = "liteview-open.cmd"
+LAUNCHER_VBS = "imageviewer-open.vbs"
+LAUNCHER_CMD = "imageviewer-open.cmd"
 EXE_CONFIG = "app-exe.txt"  # 记录 exe 全路径：vbs 模式用 UTF-16，cmd 模式用系统 ANSI
 
 # 打包产物可能的文件名（pyproject 的 [tool.flet.windows].artifact 决定）
-EXE_CANDIDATES = ("LiteView.exe", "cs-image-viewer.exe", "liteview.exe")
+EXE_CANDIDATES = ("ImageViewer.exe", "cs-image-viewer.exe", "imageviewer.exe")
 
 # 兜底扩展名列表（正常路径下从 viewer.image_manager.IMAGE_EXTS 读取，保持单一来源）
 _FALLBACK_EXTS = (
@@ -99,7 +99,7 @@ _FALLBACK_EXTS = (
 #     因此 exe 名可以是中文等非 ASCII 字符；
 #   * 用 string.Template 而非 str.format：模板里含 Dart 花括号代码片段。
 # ---------------------------------------------------------------------------
-VBS_TEMPLATE = """' LiteView -- "Open with" launcher (auto-generated, do not edit)
+VBS_TEMPLATE = """' ImageViewer -- "Open with" launcher (auto-generated, do not edit)
 '
 ' Why this file exists: the exe built by `flet build` is a Flutter/Dart shell
 ' whose Dart entrypoint treats ANY command-line argument as a "developer mode"
@@ -143,9 +143,9 @@ If fso.FileExists(cfgPath) Then
 End If
 
 If exePath = "" Or Not fso.FileExists(exePath) Then
-    MsgBox "LiteView: the application executable was not found." & vbCrLf & vbCrLf & _
+    MsgBox "ImageViewer: the application executable was not found." & vbCrLf & vbCrLf & _
            "Re-run the file association setup, then try again:" & vbCrLf & _
-           "    py -3.12 -m viewer.file_assoc install", 48, "LiteView"
+           "    py -3.12 -m viewer.file_assoc install", 48, "ImageViewer"
     WScript.Quit 1
 End If
 
@@ -172,7 +172,7 @@ sh.Run Chr(34) & exePath & Chr(34), 1, False
 """
 
 CMD_TEMPLATE = """@echo off
-rem LiteView -- "Open with" launcher (auto-generated, do not edit).
+rem ImageViewer -- "Open with" launcher (auto-generated, do not edit).
 rem See $vbs for why the file path is forwarded through $open_env instead of a
 rem command-line argument. `set` + `start` is plain Win32 env inheritance, so no
 rem request file is needed here; the only downside of this variant is the brief
@@ -191,7 +191,7 @@ rem A stale config (app moved or deleted) is treated as "not configured".
 if defined EXE if not exist "%EXE%" set "EXE="
 if not defined EXE for %%f in ("%~dp0*.exe") do if not defined EXE set "EXE=%%~ff"
 if not defined EXE (
-    echo LiteView: the application executable was not found.
+    echo ImageViewer: the application executable was not found.
     echo Re-run: py -3.12 -m viewer.file_assoc install
     exit /b 1
 )
@@ -253,7 +253,7 @@ def resolve_exe(explicit: str | None = None) -> Path:
     tried: list[Path] = []
 
     def _probe(name: str) -> Path | None:
-        # pyproject 里的 artifact 可能写成 "LiteView"（不带扩展名），两种都试。
+        # pyproject 里的 artifact 可能写成 "ImageViewer"（不带扩展名），两种都试。
         variants = [name] if name.lower().endswith(".exe") else [f"{name}.exe", name]
         for root in roots:
             for variant in variants:
@@ -304,7 +304,7 @@ def _system_exe(name: str) -> str:
 # 启动器生成
 # ---------------------------------------------------------------------------
 def default_launcher_dir() -> Path:
-    """启动器默认落点：%LOCALAPPDATA%\\LiteView（与打包产物解耦，重建不失效）。"""
+    """启动器默认落点：%LOCALAPPDATA%\\ImageViewer（与打包产物解耦，重建不失效）。"""
     base = os.environ.get("LOCALAPPDATA") or os.environ.get("TEMP") or "."
     return Path(base) / LAUNCHER_DIR_NAME
 
@@ -313,7 +313,7 @@ def write_launcher(launcher_dir: Path, exe: Path, mode: str = "vbs") -> Path:
     """在启动器目录写好启动器与 exe 路径配置，返回启动器路径。
 
     exe 全路径**只**写进配置文件，脚本内容不含任何 exe 名称 —— 脚本因此永远是
-    纯 ASCII，exe 叫 `LiteView.exe` 还是 `图片查看器.exe` 都不影响编码安全。
+    纯 ASCII，exe 叫 `ImageViewer.exe` 还是 `图片查看器.exe` 都不影响编码安全。
     """
     exe = Path(exe).resolve()
     launcher_dir.mkdir(parents=True, exist_ok=True)
@@ -587,9 +587,9 @@ def install(
     # 5) 右键菜单：图片 / 文件夹 / 文件夹空白处
     if face_menu:
         for verb_path, title, arg in (
-            (rf"{CLASSES}\SystemFileAssociations\image\shell\LiteViewOpen", "用 LiteView 打开", "%1"),
-            (rf"{CLASSES}\Directory\shell\LiteViewOpen", "用 LiteView 打开", "%1"),
-            (rf"{CLASSES}\Directory\Background\shell\LiteViewOpen", "在此处用 LiteView 打开", "%V"),
+            (rf"{CLASSES}\SystemFileAssociations\image\shell\ImageViewerOpen", "用 ImageViewer 打开", "%1"),
+            (rf"{CLASSES}\Directory\shell\ImageViewerOpen", "用 ImageViewer 打开", "%1"),
+            (rf"{CLASSES}\Directory\Background\shell\ImageViewerOpen", "在此处用 ImageViewer 打开", "%V"),
         ):
             with _key(verb_path) as k:
                 _set(k, None, title)
@@ -611,8 +611,8 @@ def install(
         print(f"  启动器    {launcher}  （{launcher_mode}）")
         print(f"  关联类型  {len(exts)} 种图片格式")
         print()
-        print("已加入：右键“打开方式”列表、右键“用 LiteView 打开”菜单、系统默认应用列表。")
-        print("设为默认：右键任意图片 → 打开方式 → 选择其他应用 → LiteView 看图 →")
+        print("已加入：右键“打开方式”列表、右键“用 ImageViewer 打开”菜单、系统默认应用列表。")
+        print("设为默认：右键任意图片 → 打开方式 → 选择其他应用 → ImageViewer →")
         print("         勾选“始终使用此应用”。Windows 10/11 不允许程序静默改默认，需手动点一次。")
 
 
@@ -624,8 +624,8 @@ def uninstall(remove_launcher: bool = True, verbose: bool = True) -> None:
 
     if _delete_tree(rf"{CLASSES}\{PROGID}"):
         removed.append(rf"HKCU\{CLASSES}\{PROGID}")
-    if _delete_tree(rf"Software\LiteView"):
-        removed.append(r"HKCU\Software\LiteView")
+    if _delete_tree(rf"Software\ImageViewer"):
+        removed.append(r"HKCU\Software\ImageViewer")
 
     # Applications\<exe>：候选名 + 配置里记录的实际名 + 扫描“命令指向本启动器”的键
     # （exe 可能被改名成中文，不能只靠固定候选名）
@@ -644,9 +644,9 @@ def uninstall(remove_launcher: bool = True, verbose: bool = True) -> None:
                 winreg.DeleteValue(k, None)
 
     for verb_path in (
-        rf"{CLASSES}\SystemFileAssociations\image\shell\LiteViewOpen",
-        rf"{CLASSES}\Directory\shell\LiteViewOpen",
-        rf"{CLASSES}\Directory\Background\shell\LiteViewOpen",
+        rf"{CLASSES}\SystemFileAssociations\image\shell\ImageViewerOpen",
+        rf"{CLASSES}\Directory\shell\ImageViewerOpen",
+        rf"{CLASSES}\Directory\Background\shell\ImageViewerOpen",
     ):
         if _delete_tree(verb_path):
             removed.append(rf"HKCU\{verb_path}")
@@ -703,7 +703,7 @@ def status_text() -> str:
         missing = sorted(set(exts) - set(linked))
         lines.append(f"  缺失：{' '.join(missing)}")
     lines.append(
-        f"右键菜单      {'已添加' if _read(rf'{CLASSES}\\SystemFileAssociations\\image\\shell\\LiteViewOpen') else '未添加'}"
+        f"右键菜单      {'已添加' if _read(rf'{CLASSES}\\SystemFileAssociations\\image\\shell\\ImageViewerOpen') else '未添加'}"
     )
     return "\n".join(lines)
 
@@ -718,8 +718,8 @@ def status() -> None:
 # ---------------------------------------------------------------------------
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="liteview-assoc",
-        description="LiteView 看图 —— Windows“打开方式”文件关联工具",
+        prog="imageviewer-assoc",
+        description="ImageViewer —— Windows“打开方式”文件关联工具",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__.split("用法::")[-1],
     )
@@ -744,11 +744,11 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"启动器落地目录（默认 {default_launcher_dir()}，与打包产物解耦）",
     )
     inst.add_argument("--icon", help='图标文件路径（默认用 exe 自带图标，即 "exe",0）')
-    inst.add_argument("--no-face-menu", action="store_true", help="不添加右键“用 LiteView 打开”菜单")
+    inst.add_argument("--no-face-menu", action="store_true", help="不添加右键“用 ImageViewer 打开”菜单")
     inst.add_argument(
         "--set-default",
         action="store_true",
-        help="同时尝试把默认打开方式设为 LiteView（受系统 UserChoice 保护，可能无效）",
+        help="同时尝试把默认打开方式设为 ImageViewer（受系统 UserChoice 保护，可能无效）",
     )
 
     uni = sub.add_parser("uninstall", help="撤销全部关联")
