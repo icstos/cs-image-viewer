@@ -164,6 +164,9 @@ def ImageViewerApp():
     snack, set_snack = ft.use_state(None)
     assoc_action, set_assoc_action = ft.use_state(None)
     assoc_status, set_assoc_status = ft.use_state(None)
+    # 启动参数（双击图片启动）还在加载时不画占位提示：直接留深色空白，
+    # 否则「占位图标 -> 图片」会白闪一下。无启动参数时空窗口正常显示提示。
+    startup_done, set_startup_done = ft.use_state(START_PATH is None)
 
     picker_ref = ft.use_ref(None)                  # FilePicker 服务（首帧注册）
     if picker_ref.current is None:
@@ -661,18 +664,17 @@ def ImageViewerApp():
         page.run_task(_calibrate_viewport)
 
     async def _calibrate_viewport() -> None:
-        """等待初始 resize 事件更新 INITIAL_SIZE 后，重算视口并同步 UI。
+        """等一次真实 resize 事件拿到客户端尺寸后校准视口。
 
-        0.86.x 的 page.width/height 在窗口建立后可能长时间保持陈旧值，
-        必须等到 resize 事件携带的真实客户端尺寸。
+        窗口在显示前已定好尺寸，首个 resize 事件通常紧随首帧到达；
+        拿到即停，不做无意义的长时间轮询（拿不到就按 page.width/height 兜底）。
         """
-        last: tuple[float, float] | None = None
-        for _ in range(15):
-            await asyncio.sleep(0.5)
-            if INITIAL_SIZE and INITIAL_SIZE != last:
-                last = INITIAL_SIZE
+        for _ in range(8):                  # 最多约 2 秒
+            if INITIAL_SIZE:
                 _refresh_viewport()
                 sync_ui()
+                return
+            await asyncio.sleep(0.25)
 
     dispatch_ref.current = _on_keyboard
     resize_ref.current = _on_resize
@@ -686,16 +688,19 @@ def ImageViewerApp():
     async def _open_startup_path(path: str) -> None:
         st = app.current
         p = Path(path)
-        if p.is_dir():
-            if st.manager.scan_folder(p) == 0:
-                toast("该文件夹中没有可显示的图片")
+        try:
+            if p.is_dir():
+                if st.manager.scan_folder(p) == 0:
+                    toast("该文件夹中没有可显示的图片")
+                    sync_ui()
+                    return
+            elif not st.manager.open_path(p):
+                toast("无法打开该文件（不支持或已损坏）")
                 sync_ui()
                 return
-        elif not st.manager.open_path(p):
-            toast("无法打开该文件（不支持或已损坏）")
-            sync_ui()
-            return
-        await _load_current_async(st)
+            await _load_current_async(st)
+        finally:
+            set_startup_done(True)   # 无论成败都结束「启动留白」，交回占位提示
 
     ft.use_effect(_startup_open, [])
 
@@ -871,6 +876,9 @@ def ImageViewerApp():
         """图片浏览区：无图时显示占位提示。"""
         st = app.current
         if img_src is None:
+            if not startup_done:
+                # 启动参数正在解码：不画提示，避免提示文案一闪而过
+                return ft.Container(expand=True, bgcolor=BG_COLOR)
             return ft.Container(
                 expand=True,
                 bgcolor=BG_COLOR,

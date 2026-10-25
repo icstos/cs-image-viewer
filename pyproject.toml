@@ -47,14 +47,33 @@ build_number = 1
 module = "main"
 path = "."
 exclude = [".cowork-temp/**", "dist/**", "**/__pycache__"]
+# 窗口以隐藏状态创建，等 main.py 把 UI 布置好、居中后再显示。
+# 这是「打开时不闪白屏、不从左上角跳位」的关键开关（对应 flet_generated.dart
+# 里的 hideWindowOnStart）；没有它，Flutter 会在首帧就把 1280x720 的窗口
+# 以白色启动屏画在桌面左上角 (10,10)。
+hide_window_on_start = true
+
+# 启动屏（窗口万一提前显示时的兜底）：深色底 + 深色转圈，
+# 不留任何白色帧。颜色键名见 flet 的 FletBootScreen。
+[tool.flet.boot_screen]
+name = "flet"
+
+[tool.flet.boot_screen.flet]
+bgcolor_light = "#141414"
+bgcolor_dark = "#141414"
+spinner_color_light = "#3d3d3d"
+spinner_color_dark = "#3d3d3d"
+theme_mode = "dark"
 
 [tool.flet.compile]
-app = false
+# 预编译 .py 为 .pyc：内嵌解释器启动时省掉源码编译，冷启动更快
+app = true
 packages = false
 cleanup = false
 
 [tool.flet.windows]
-artifact = "ImageViewer.exe"
+# 只写产品名：flet 会自己补 .exe，写成 "ImageViewer.exe" 会产出 ImageViewer.exe.exe
+artifact = "ImageViewer"
 # flet build 只读取 project.dependencies，可选格式依赖需在此显式声明才会打进桌面包
 dependencies = [
     "pillow-heif>=1.0",

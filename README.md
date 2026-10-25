@@ -30,18 +30,42 @@ imageviewer-assoc               # “打开方式”文件关联注册工具（�
 
 ```bash
 py -3.12 -m pip install ".[build]"
-flet build windows            # 产物在 build/windows/
+flet build windows --python-version 3.12      # 产物在 build/windows/
 ```
+
+必须显式带 `--python-version 3.12`：flet-cli 的默认打包 Python 版本会随版本升级
+（1.0.4 起默认 3.14），版本一变就会清空 `build/` 并重装全部依赖项，
+而 `rawpy` / `resvg` / `pillow-heif` 这些二进制包是按 3.12 装的。
+
+若 `build/flutter/build/windows/.../Release` 已存在且构建被 safe-delete 钩子拦下，
+先把该目录移走/删除再构建（Flutter 需要重建整个 Release 包）。
 
 `flet build` 读取 `pyproject.toml`：`[project.dependencies]` 是运行时依赖，
 `[tool.flet.windows.dependencies]` 额外把特殊格式库一起打进桌面包
 （`flet build` 不会读取 `optional-dependencies`）。注意同一目录下若存在
 `requirements.txt`，会**优先于** `pyproject.toml` 被读取，因此不要恢复该文件。
 
+## 启动行为（不闪白屏）
+
+`pyproject.toml` 中有三项直接决定「打开时的观感」，改动前先读这里：
+
+| 配置 | 作用 |
+| --- | --- |
+| `[tool.flet.app] hide_window_on_start = true` | 客户端窗口创建后**不显示**，等 Python 布置好界面再亮出来 |
+| `[tool.flet.boot_screen.flet]` | 启动屏底色/转圈全设成深色，任何提前显示的帧都不会是白色 |
+| `[tool.flet.compile] app = true` | 打包时把 `main.py` / `viewer/*.py` 预编译成 `.pyc`，内嵌解释器启动更快 |
+
+`main.py` 的启动顺序是「先布置、后显示」：构建 UI 树 → 一次性下发窗口尺寸/最小尺寸/
+主题/底色（窗口仍隐藏）→ 居中 → 把标题栏切成深色 → 最后显示。
+用户第一眼看到的就是完整界面，不会出现「左上角白窗 → 跳位 → 变暗」的过程。
+
+调试用环境变量：`CSIV_TIMING=1` 打印各阶段耗时（打包版写入 `console.log`），
+`CSIV_SMOKE=1` 启动数秒后自动退出。
+
 ## 文件关联（右键“打开方式” / 设为默认看图程序）
 
 ```bash
-flet build windows                        # 产物在 build/windows/
+flet build windows --python-version 3.12  # 产物在 build/windows/
 py -3.12 -m viewer.file_assoc install     # 注册“打开方式”+ 右键菜单（免管理员）
 py -3.12 -m viewer.file_assoc status      # 查看当前关联状态
 py -3.12 -m viewer.file_assoc uninstall   # 全部撤销
