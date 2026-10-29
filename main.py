@@ -277,7 +277,10 @@ async def _smoke_run(page: ft.Page, start_source: str, start_path: str | None) -
     )
     await asyncio.sleep(2)
     print("[smoke] closing window", flush=True)
-    await page.window.close()
+    try:
+        await page.window.close()
+    except RuntimeError:
+        pass        # 窗口已关闭 → 会话断开，flet 的 close() 会抛 "Session closed"
 
 
 def run() -> None:

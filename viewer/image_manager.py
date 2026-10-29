@@ -99,25 +99,48 @@ class ImageManager:
     # ---------- 文件列表 ----------
 
     def open_path(self, path: str | Path) -> bool:
-        """打开单张图片（作为独立列表加载）。"""
+        """打开单张图片：同时载入所在文件夹，使上一张/下一张可用。
+
+        列表为「同目录 + 扩展名白名单」的全部图片（自然排序），索引定位到目标文件，
+        因此「打开单张图片」和「打开文件夹后再点中某张」得到的是同一个上下文。
+        目录不可读（权限/网络盘掉线）时退化为单文件列表，至少保证这张能看。
+        """
         p = Path(path)
         if not p.is_file() or p.suffix.lower() not in IMAGE_EXTS:
             return False
-        self.files = [p]
-        self.index = 0
+        siblings = self._list_images(p.parent)
+        self.files = siblings or [p]
+        self.index = self._locate(p, self.files)
         self._reset()
         return True
 
     def scan_folder(self, folder: str | Path) -> int:
         """扫描目录内所有图片，按文件名自然排序；返回图片总数。"""
-        folder = Path(folder)
-        self.files = sorted(
-            (p for p in folder.iterdir() if p.is_file() and p.suffix.lower() in IMAGE_EXTS),
-            key=lambda p: natural_key(p.stem),
-        )
+        self.files = self._list_images(Path(folder))
         self.index = 0
         self._reset()
         return len(self.files)
+
+    @staticmethod
+    def _list_images(folder: Path) -> list[Path]:
+        """列出目录内的图片文件（自然排序）；目录不可读时返回空列表。"""
+        try:
+            entries = [
+                p for p in folder.iterdir()
+                if p.is_file() and p.suffix.lower() in IMAGE_EXTS
+            ]
+        except OSError:
+            return []
+        return sorted(entries, key=lambda p: natural_key(p.stem))
+
+    @staticmethod
+    def _locate(target: Path, files: list[Path]) -> int:
+        """在列表中定位目标文件的下标；找不到时回退到首张。"""
+        name = target.name.lower()          # Windows 文件名大小写不敏感
+        for i, f in enumerate(files):
+            if f.name.lower() == name:
+                return i
+        return 0
 
     def navigate(self, delta: int) -> bool:
         """切换图片（首尾循环），自动跳过损坏文件；成功返回 True。"""
