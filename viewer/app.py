@@ -547,20 +547,21 @@ def ImageViewerApp():
         sync_ui()
         toast(f"已删除：{removed}")
 
-    async def act_esc(_e=None) -> None:
-        st = app.current
-        if st.sel_rect is not None:           # Esc：取消选区
-            _clear_selection()
-            return
-        if st.fullscreen:
-            st.fullscreen = False
-            page.window.full_screen = False
-            _refresh_viewport()
-            page.update()
-            sync_ui()
-
     async def act_exit(_e=None) -> None:
-        await page.window.close()
+        """退出程序（Esc / 菜单「退出」，与 IrfanView 一致）。
+
+        唯一的例外是删除确认弹窗打开时——此时 Esc 只关掉弹窗，
+        否则「想取消删除」会变成「误关整个程序」。
+        """
+        if show_delete:
+            set_show_delete(False)
+            return
+        try:
+            await page.window.close()
+        except Exception:
+            # 窗口关闭后会话随即断开，close() 的往返调用常会抛 "Session closed"；
+            # 这正是我们要的结果，不该以异常形式刷到控制台。
+            pass
 
     # ---------- 键盘 / 窗口事件 ----------
 
@@ -585,7 +586,6 @@ def ImageViewerApp():
         "fit_window": lambda: act_fit_window(),
         "actual_size": lambda: act_actual_size(),
         "delete": lambda: act_delete(),
-        "esc": lambda: act_esc(),
         "exit": lambda: act_exit(),
     }
 
@@ -960,7 +960,7 @@ def ImageViewerApp():
                 ],
             ),
             _menu_item("导出当前帧…", act_export_frame, ft.Icons.SAVE_ALT, "Ctrl+E"),
-            _menu_item("退出", act_exit, ft.Icons.CLOSE),
+            _menu_item("退出", act_exit, ft.Icons.CLOSE, "Esc"),
         ],
     )
 

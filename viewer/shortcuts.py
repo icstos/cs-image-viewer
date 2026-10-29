@@ -24,9 +24,9 @@ _KEYMAP: dict[str, str] = {
     "s": "slideshow", "p": "pause",
     # 动图：A 播放/暂停，[ 上一帧，] 下一帧
     "a": "anim_toggle", "[": "frame_prev", "]": "frame_next",
-    # 删除 / 取消
+    # 删除 / 退出
     "delete": "delete", "del": "delete",
-    "escape": "esc", "esc": "esc",
+    "escape": "exit", "esc": "exit",
 }
 
 # Ctrl 组合键动作表：(是否按住 Shift, 按键) -> 动作名
