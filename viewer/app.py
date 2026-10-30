@@ -265,6 +265,22 @@ def ImageViewerApp():
             st.anim_playing = n > 1
             st.anim_paused = False
             sync_ui()
+        if len(st.manager.files) == 1:      # 单图打开：同目录列表留到首帧之后再补
+            page.run_task(_expand_folder_async, st, gen)
+
+    async def _expand_folder_async(st: AppState, gen: int) -> None:
+        """首帧之后再补全「同目录的上一张/下一张」，不占打开耗时。
+
+        扫描放在后台线程（慢盘/万级文件目录也只影响这之后的可切范围，不影响出图）；
+        结果回主线程时才校验 gen —— 扫描期间用户若已切图或另开文件，就丢弃这次结果，
+        不会用旧的目录覆盖新上下文。
+        """
+        loop = asyncio.get_running_loop()
+        listing = await loop.run_in_executor(None, st.manager.folder_candidates)
+        if gen != st.gen or not st.manager.apply_folder_listing(listing):
+            return
+        sync_ui()                            # 状态栏页码 1/1 -> n/N
+        await loop.run_in_executor(None, st.manager.preload)   # 热身后切图更顺
 
     async def _goto(delta: int) -> None:
         """切换图片（首尾循环、自动跳过坏图），异步解码。"""
@@ -339,7 +355,10 @@ def ImageViewerApp():
         if not folder:
             return
         st = app.current
-        if st.manager.scan_folder(folder) == 0:
+        total = await asyncio.get_running_loop().run_in_executor(
+            None, st.manager.scan_folder, folder
+        )
+        if total == 0:
             toast("该文件夹中没有可显示的图片")
             sync_ui()
             return
@@ -690,7 +709,10 @@ def ImageViewerApp():
         p = Path(path)
         try:
             if p.is_dir():
-                if st.manager.scan_folder(p) == 0:
+                total = await asyncio.get_running_loop().run_in_executor(
+                    None, st.manager.scan_folder, p
+                )
+                if total == 0:
                     toast("该文件夹中没有可显示的图片")
                     sync_ui()
                     return

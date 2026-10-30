@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import base64
 import io
+import os
 import re
 from collections import OrderedDict
 from pathlib import Path
@@ -99,19 +100,55 @@ class ImageManager:
     # ---------- 文件列表 ----------
 
     def open_path(self, path: str | Path) -> bool:
-        """打开单张图片：同时载入所在文件夹，使上一张/下一张可用。
+        """打开单张图片：**只加载这一张**，不碰目录。
 
-        列表为「同目录 + 扩展名白名单」的全部图片（自然排序），索引定位到目标文件，
-        因此「打开单张图片」和「打开文件夹后再点中某张」得到的是同一个上下文。
-        目录不可读（权限/网络盘掉线）时退化为单文件列表，至少保证这张能看。
+        首帧延迟与目录里有多少文件、目录是否在慢速网络盘上完全无关；
+        同目录的其余图片由 `expand_folder()` 在显示之后异步补上，
+        补上后上一张/下一张即可用，当前这张不会闪、也不会重新解码。
         """
         p = Path(path)
         if not p.is_file() or p.suffix.lower() not in IMAGE_EXTS:
             return False
-        siblings = self._list_images(p.parent)
-        self.files = siblings or [p]
-        self.index = self._locate(p, self.files)
+        self.files = [p]
+        self.index = 0
         self._reset()
+        return True
+
+    def expand_folder(self) -> bool:
+        """同步版补全（供脚本/测试用）：扫描目录并立即应用。
+
+        界面不要直接调它 —— 扫描可能很慢，会卡住事件循环；
+        app 侧走 `folder_candidates()` + `apply_folder_listing()` 两段式。
+        """
+        return self.apply_folder_listing(self.folder_candidates())
+
+    def folder_candidates(self) -> list[Path]:
+        """（后台线程）读出当前图片所在目录的图片列表，**不修改任何状态**。
+
+        拆出这一步是为了让「慢的 I/O」只发生在后台线程里：扫描结果拿回主线程后
+        再决定要不要应用，避免扫描途中用户已切到别的文件、列表却被旧结果覆盖。
+        """
+        if not self.files:
+            return []
+        return self._list_images(self.files[self.index].parent)
+
+    def apply_folder_listing(self, listing: list[Path]) -> bool:
+        """（主线程）把扫描结果应用到「单文件列表」上；返回是否真的扩展了。
+
+        - 已经在浏览目录（列表 > 1 张）→ 什么都不做，False；
+        - 目录里也只有这一张 → 保持单文件，False；
+        - 成功 → 当前文件仍是同一张图，索引与已解码/已编码缓存**一起搬家**，
+          所以既不会重新解码，也不会让画面闪一下。
+        """
+        if len(self.files) != 1 or len(listing) <= 1:
+            return False
+        current = self.files[self.index]
+        new_index = self._locate(current, listing)
+        if new_index < 0:                    # 目录里居然没有它（权限/竞态）：保持原状
+            return False
+        self._remap_indices(self.index, new_index)
+        self.files = listing
+        self.index = new_index
         return True
 
     def scan_folder(self, folder: str | Path) -> int:
@@ -123,24 +160,53 @@ class ImageManager:
 
     @staticmethod
     def _list_images(folder: Path) -> list[Path]:
-        """列出目录内的图片文件（自然排序）；目录不可读时返回空列表。"""
+        """列出目录内的图片文件（自然排序）；目录不可读时返回空列表。
+
+        用 `os.scandir` 而非 `iterdir`：文件类型来自目录项自带的元数据，
+        不必对每个文件再 stat 一次 —— 大目录与网络盘上省下的就是成百上千次系统调用。
+        """
         try:
-            entries = [
-                p for p in folder.iterdir()
-                if p.is_file() and p.suffix.lower() in IMAGE_EXTS
-            ]
+            with os.scandir(folder) as it:
+                files = [
+                    Path(entry.path) for entry in it
+                    if entry.is_file()
+                    and os.path.splitext(entry.name)[1].lower() in IMAGE_EXTS
+                ]
         except OSError:
             return []
-        return sorted(entries, key=lambda p: natural_key(p.stem))
+        return sorted(files, key=lambda p: natural_key(p.stem))
 
     @staticmethod
     def _locate(target: Path, files: list[Path]) -> int:
-        """在列表中定位目标文件的下标；找不到时回退到首张。"""
-        name = target.name.lower()          # Windows 文件名大小写不敏感
+        """在列表中定位目标文件的下标；找不到返回 -1。
+
+        先用原始文件名比一遍（C 层字符串比较，不产生临时对象），
+        再退回大小写不敏感比较 —— 常见的「文件名一致」在这里是 O(n) 次无分配比较。
+        """
+        name = target.name
         for i, f in enumerate(files):
-            if f.name.lower() == name:
+            if f.name == name:
                 return i
-        return 0
+        lowered = name.lower()               # Windows 文件名大小写不敏感
+        for i, f in enumerate(files):
+            if f.name.lower() == lowered:
+                return i
+        return -1
+
+    def _remap_indices(self, old: int, new: int) -> None:
+        """把以 old 为下标的解码/编码缓存搬到 new（列表补全后索引位移）。"""
+        if old == new:
+            return
+        self._opened = OrderedDict(
+            (new if idx == old else idx, im) for idx, im in self._opened.items()
+        )
+        self._encoded = {
+            (new if key[0] == old else key[0], *key[1:]): value
+            for key, value in self._encoded.items()
+        }
+        if old in self._failed:
+            self._failed.discard(old)
+            self._failed.add(new)
 
     def navigate(self, delta: int) -> bool:
         """切换图片（首尾循环），自动跳过损坏文件；成功返回 True。"""
