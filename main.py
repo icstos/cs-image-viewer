@@ -45,6 +45,12 @@ WINDOW_MIN_HEIGHT = 480
 WINDOW_TITLE = "ImageViewer"
 BG_COLOR = "#141414"
 
+# 全局字体：阿里普惠体，随应用一起打包，不依赖目标机器装了什么中文字体。
+# 路径相对 assets 目录（flet build 会把 assets/ 整体拷进安装包），
+# 因此开发运行与打包后的路径写法完全一致。
+FONT_FAMILY = "AlibabaPuHuiTi"
+FONT_FILE = "/fonts/AlibabaPuHuiTi-3-55-Regular.otf"
+
 # 启动计时起点（模块导入即开始，覆盖 Python 端全部启动开销）
 _T0 = time.perf_counter()
 _TIMING = bool(os.environ.get("CSIV_TIMING"))
@@ -205,8 +211,17 @@ def _is_visible(hwnd: int) -> bool:
 # 页面入口
 # ---------------------------------------------------------------------------
 
+def _configure_theme(page: ft.Page) -> None:
+    """主题与字体（深色 + 本地普惠体）。放在 render 之前，首帧即最终排版。"""
+    page.theme_mode = ft.ThemeMode.DARK
+    # 字体挂在 Theme 上：菜单、状态栏、弹窗、提示等所有控件统一继承，
+    # 不需要逐个 ft.Text 指定 font_family；Material 图标用的是独立图标字体，不受影响。
+    page.theme = ft.Theme(font_family=FONT_FAMILY)
+
+
 def _configure_window(page: ft.Page) -> None:
-    """窗口属性（尺寸/最小尺寸/主题/底色）集中下发，此时窗口仍是隐藏的。"""
+    """窗口属性（尺寸/最小尺寸/底色）集中下发，此时窗口仍是隐藏的。"""
+    # render 有可能把主题重置回默认，这里再钉一次深色模式（字体仍由 page.theme 决定）
     page.theme_mode = ft.ThemeMode.DARK
     window = page.window
     window.min_width = WINDOW_MIN_WIDTH
@@ -237,6 +252,9 @@ async def main(page: ft.Page) -> None:
     page.title = WINDOW_TITLE
     page.bgcolor = BG_COLOR
     page.padding = 0
+    # 字体必须在 render 之前登记：首帧就用上本地字体，避免先按系统字体排版再跳字。
+    page.fonts = {FONT_FAMILY: FONT_FILE}
+    _configure_theme(page)
     # 在 render 前捕获初始客户端尺寸（page.width/height 可能陈旧）
     page.on_resize = lambda e: app_module.set_initial_size(e.width, e.height)
 
@@ -254,7 +272,7 @@ async def main(page: ft.Page) -> None:
         page.update()
         return
 
-    # 注意：窗口/主题属性须在 render 之后统一设置，否则尺寸会被重置为默认值。
+    # 注意：窗口尺寸属性须在 render 之后设置，否则会被重置为默认值。
     # 尺寸与 UI 树在同一次 update 中下发，窗口隐藏期间完成，避免「先小窗后跳大」。
     _configure_window(page)
     page.update()

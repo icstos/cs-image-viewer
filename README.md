@@ -157,12 +157,14 @@ Python 才会真正启动。`main.py` 按 `env → 请求文件 → argv` 顺序
 - 滚轮交互：图片完全可见时向上/向下翻页；图片放大溢出视口时向上/向下滚动浏览（到边界自动停止）；按住 Ctrl 滚轮则以鼠标所在位置为锚点缩放
 - 窗口尺寸变化自动重算并居中；幻灯片默认 3 秒间隔，可调 1/2/3/5/10 秒
 - 底部状态栏：文件名 / 分辨率+大小 / 页码+实时缩放百分比；全屏隐藏全部 UI
+- 界面统一使用随包分发的本地字体 `assets/fonts/AlibabaPuHuiTi-3-55-Regular.otf`（阿里普惠体）：不依赖目标机器装了什么中文字体，菜单、状态栏、弹窗、提示的文字风格一致；字体路径相对 `assets/` 声明，开发运行与 `flet build` 产物同一套写法
 
 ## 结构
 
 ```
 pyproject.toml        依赖与打包配置（PEP 621 + [tool.flet]）
 main.py               入口（启动路径：IMAGEVIEWER_OPEN 环境变量 / 请求文件 / 命令行参数）
+assets/fonts/         随包字体（AlibabaPuHuiTi-3-55-Regular.otf，全局界面字体）
 viewer/               应用包
   app.py               主界面组件（菜单栏、图片区、状态栏、事件分发）
   image_manager.py     图片管理器（扫描/排序/解码缓存/变换/编码）
