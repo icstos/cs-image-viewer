@@ -41,7 +41,61 @@ MIN_ZOOM = 0.1                      # 最小缩放 10%
 MAX_ZOOM = 10.0                     # 最大缩放 1000%
 ZOOM_STEP = 1.12                    # 单次缩放步进系数
 
+# 悬停翻页按钮（叠在图片区左右两侧的半透明圆形箭头）
+NAV_SIZE = 46.0                     # 直径：≥44 是桌面端舒适的点击目标下限
+NAV_MARGIN = 14.0                   # 距图片区左右边缘的距离
+NAV_ICON = 28
+
 SLIDESHOW_INTERVALS = (1, 2, 3, 5, 10)   # 幻灯片可选间隔（秒）
+
+
+def _nav_button(
+    icon: ft.IconData,
+    left: float,
+    top: float,
+    on_click,
+) -> ft.IconButton:
+    """图片区左右悬浮的半透明翻页箭头。
+
+    用 IconButton 而不是自绘 Container：手型光标、按下涟漪、悬停高亮都由框架按
+    控制状态（default/hovered）自动切换，鼠标移动不经过 Python，不会引起整页重建。
+
+    视觉上是一层「深色玻璃」：底色半透明黑 + 一圈更亮的细描边 + 轻微投影，
+    这样压在白底照片和深色照片上都立得住；图标只到 85% 白，不抢画面主体。
+
+    不加文字 tooltip：它贴着窗口边缘会把自己裁掉（Flutter 不会自动避让），
+    残缺的提示比没有更难看；箭头形状 + 悬停高亮 + 手型光标已足够表意。
+    """
+    return ft.IconButton(
+        icon=icon,
+        icon_size=NAV_ICON,
+        width=NAV_SIZE,
+        height=NAV_SIZE,
+        left=left,
+        top=top,
+        mouse_cursor=ft.MouseCursor.CLICK,
+        style=ft.ButtonStyle(
+            shape=ft.CircleBorder(),
+            padding=0,
+            animation_duration=140,
+            bgcolor={
+                ft.ControlState.DEFAULT: ft.Colors.with_opacity(0.38, ft.Colors.BLACK),
+                ft.ControlState.HOVERED: ft.Colors.with_opacity(0.72, ft.Colors.BLACK),
+            },
+            icon_color={
+                ft.ControlState.DEFAULT: ft.Colors.with_opacity(0.85, ft.Colors.WHITE),
+                ft.ControlState.HOVERED: ft.Colors.WHITE,
+            },
+            overlay_color=ft.Colors.with_opacity(0.08, ft.Colors.WHITE),
+            side=ft.BorderSide(1, ft.Colors.with_opacity(0.16, ft.Colors.WHITE)),
+            elevation={
+                ft.ControlState.DEFAULT: 2,
+                ft.ControlState.HOVERED: 6,
+            },
+            shadow_color=ft.Colors.with_opacity(0.45, ft.Colors.BLACK),
+        ),
+        on_click=on_click,
+    )
 
 
 def _ctrl_pressed() -> bool:
@@ -290,6 +344,17 @@ def ImageViewerApp():
         elif st.manager.files and st.manager.get_display()[0] is None:
             toast("没有可显示的图片")
             sync_ui()
+
+    def _nav_click(delta: int) -> None:
+        """点击悬浮箭头：切图，并把键盘焦点还给 KeyboardListener。
+
+        不还焦点的话焦点会留在按钮上，KeyboardListener 收不到后续的 Ctrl 按下，
+        Ctrl+滚轮锚点缩放会「点过箭头之后就失灵」。
+        """
+        page.run_task(_goto, delta)
+        listener = kb_listener_ref.current
+        if listener is not None:
+            page.run_task(listener.focus)
 
     # ---------- 动图播放 ----------
 
@@ -934,6 +999,23 @@ def ImageViewerApp():
                 border=ft.Border.all(1.5, ft.Colors.BLUE_400),
                 bgcolor=ft.Colors.WHITE_24,     # 半透明填充，提升选区可见性
             )]
+        # 浮层翻页箭头：只有一张图时没有「上一张/下一张」可去，直接不画
+        nav: list[ft.Control] = []
+        if len(st.manager.files) > 1:
+            # 全屏时按钮离屏幕边缘再留远一点：贴边太近既不好点，也显得局促
+            margin = NAV_MARGIN * 1.8 if st.fullscreen else NAV_MARGIN
+            nav_top = max((vh - NAV_SIZE) / 2, 8.0)
+            nav = [
+                _nav_button(
+                    ft.Icons.CHEVRON_LEFT,
+                    margin, nav_top, lambda _e: _nav_click(-1),
+                ),
+                _nav_button(
+                    ft.Icons.CHEVRON_RIGHT,
+                    max(vw - margin - NAV_SIZE, margin), nav_top,
+                    lambda _e: _nav_click(1),
+                ),
+            ]
         return ft.Stack(
             expand=True,
             clip_behavior=ft.ClipBehavior.HARD_EDGE,
@@ -949,6 +1031,7 @@ def ImageViewerApp():
                     gapless_playback=True,      # 切换图片时无闪烁
                 ),
                 *overlay,
+                *nav,                           # 箭头压在选区之上：始终可点
             ],
         )
 
