@@ -33,6 +33,7 @@ _KEYMAP: dict[str, str] = {
 _CTRL_KEYMAP: dict[tuple[bool, str], str] = {
     (False, "o"): "open_file",
     (True, "o"): "open_folder",
+    (False, "n"): "open_new_window",   # Ctrl+N 在新窗口打开（共享缓存）
     (False, "0"): "fit_window",     # Ctrl+0 适应窗口
     (False, "1"): "actual_size",    # Ctrl+1 1:1 原始大小
     (False, "e"): "export_frame",   # Ctrl+E 导出当前帧

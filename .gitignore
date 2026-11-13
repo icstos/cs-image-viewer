@@ -7,3 +7,7 @@ build
 dist/
 *.egg-info/
 .venv/
+# 测试脚本产生的临时数据目录
+.tmp-*/
+.tmp-*
+!tools/

@@ -27,9 +27,10 @@ build = ["flet-cli>=1.0.0"]
 [project.scripts]
 imageviewer = "main:run"
 imageviewer-assoc = "viewer.file_assoc:main"   # Windows“打开方式”文件关联注册工具
+imageviewer-daemon = "viewer.daemon:main"      # 独立常驻的共享缓存服务（无窗口）
 
 [tool.setuptools]
-packages = ["viewer"]
+packages = ["viewer", "viewer.service"]
 py-modules = ["main"]
 
 # ---------------------------------------------------------------------------

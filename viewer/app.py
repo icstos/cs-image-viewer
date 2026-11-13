@@ -4,15 +4,21 @@
     ImageViewerApp  根组件：顶部菜单栏 + 图片浏览区 + 底部状态栏
     AppState        全部可变状态，保存在 use_ref 中，事件回调直接读写
     sync_ui()       状态 -> UI 镜像（use_state）的统一同步入口，驱动组件重绘
+
+进程模型：本模块只负责**一个窗口**的界面与交互。图片从哪来取决于
+`AppState.manager` 的工厂（`set_manager_factory`）——
+`RemoteImageManager`（共享缓存，多个窗口共用解码结果）或
+`ImageManager`（纯本地解码，Web 调试与降级时使用）。
+界面代码对两者一视同仁，因为它俩接口完全一致。
 """
 from __future__ import annotations
 
 import asyncio
 import ctypes
 import os
-import sys
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Callable
 
 import flet as ft
 
@@ -21,6 +27,16 @@ from .shortcuts import match
 
 START_PATH: str | None = None   # 启动时自动打开的文件/文件夹（由 main.py 注入）
 INITIAL_SIZE: tuple[float, float] | None = None   # 初始客户端尺寸（由 main.py 在 render 前捕获）
+
+# 图片管理器的工厂：main.py 在 render 之前注入（共享缓存版 / 本地版）。
+# 用「工厂」而不是实例：每个窗口进程各有自己的 AppState 与缓存句柄。
+_manager_factory: Callable[[], ImageManager] = ImageManager
+
+
+def set_manager_factory(factory: Callable[[], ImageManager]) -> None:
+    """注入管理器工厂（由 main.py 调用；不注入时退回纯本地解码）。"""
+    global _manager_factory
+    _manager_factory = factory
 
 
 def set_initial_size(width: float, height: float) -> None:
@@ -47,6 +63,46 @@ NAV_MARGIN = 14.0                   # 距图片区左右边缘的距离
 NAV_ICON = 28
 
 SLIDESHOW_INTERVALS = (1, 2, 3, 5, 10)   # 幻灯片可选间隔（秒）
+
+
+def _format_service_info(info: dict | None) -> str:
+    """把服务统计排版成弹窗里的多行文本（诊断共享缓存是否真的在工作）。"""
+    if not info:
+        return "（无数据）"
+    if info.get("note"):
+        return str(info["note"])
+    lines = [
+        f"角色：{info.get('role', '-')}",
+        f"服务进程：pid {info.get('pid', '-')}",
+        f"连接：{info.get('backend', '-')}",
+    ]
+    blobs = info.get("blobs") or {}
+    if blobs:
+        lines += [
+            "",
+            f"磁盘缓存：{blobs.get('count', 0)} 个 · {format_size(blobs.get('bytes', 0))}"
+            f"（上限 {format_size(blobs.get('limit_bytes', 0))}）",
+            f"命中 {blobs.get('hits', 0)} 次 · 未命中 {blobs.get('misses', 0)} 次",
+        ]
+        hits, misses = blobs.get("hits", 0), blobs.get("misses", 0)
+        if hits + misses:
+            lines.append(f"命中率：{hits * 100 // (hits + misses)}%")
+    decoded = info.get("decoded") or {}
+    if decoded:
+        lines.append(
+            f"解码缓存：{decoded.get('entries', 0)} 张 · "
+            f"{decoded.get('megapixels', 0)} MP"
+        )
+    counters = info.get("counters") or {}
+    if counters:
+        lines.append(
+            f"预加载：完成 {counters.get('preload_done', 0)} · "
+            f"排队 {info.get('pending', 0)}"
+        )
+    if info.get("error"):
+        lines += ["", f"错误：{info['error']}"]
+    lines += ["", "状态栏出现「缓存」= 这张图直接读自共享缓存，本窗口没有解码。"]
+    return "\n".join(lines)
 
 
 def _nav_button(
@@ -130,7 +186,7 @@ class ViewState:
 @dataclass
 class AppState:
     """应用全部可变状态；实例保存在 use_ref 中，回调直接读写最新值。"""
-    manager: ImageManager = field(default_factory=ImageManager)
+    manager: ImageManager = field(default_factory=lambda: _manager_factory())
     view: ViewState = field(default_factory=ViewState)
     fullscreen: bool = False
     slideshow_on: bool = False
@@ -218,6 +274,7 @@ def ImageViewerApp():
     snack, set_snack = ft.use_state(None)
     assoc_action, set_assoc_action = ft.use_state(None)
     assoc_status, set_assoc_status = ft.use_state(None)
+    service_info, set_service_info = ft.use_state(None)   # 共享缓存状态（诊断）
     # 启动参数（双击图片启动）还在加载时不画占位提示：直接留深色空白，
     # 否则「占位图标 -> 图片」会白闪一下。无启动参数时空窗口正常显示提示。
     startup_done, set_startup_done = ft.use_state(START_PATH is None)
@@ -250,6 +307,8 @@ def ImageViewerApp():
         info_str = f"{info['w']}×{info['h']} · {format_size(info['size'])}"
         if info["frames"] > 1:
             info_str += f" · 动图 {st.manager.current_frame + 1}/{info['frames']}帧"
+        if getattr(st.manager, "last_shared_hit", False):
+            info_str += " · 缓存"      # 这一帧来自共享缓存，本窗口没有解码
         set_file_name(info["name"])
         set_info_text(info_str if info["total"] else "")
         set_fullscreen(st.fullscreen)
@@ -428,6 +487,33 @@ def ImageViewerApp():
             sync_ui()
             return
         await _load_current_async(st)
+
+    async def act_open_new_window(_e=None) -> None:
+        """在新窗口打开：真正另起一个进程，但复用主进程的共享缓存。
+
+        这是「单程序打开多张图」的入口 —— 第二张图如果已经被预加载过，
+        新窗口启动时直接读编码好的结果，连解码都省了。
+        """
+        try:
+            files = await picker_ref.current.pick_files(
+                dialog_title="在新窗口打开图片",
+                file_type=ft.FilePickerFileType.CUSTOM,
+                allowed_extensions=sorted(ext.lstrip(".") for ext in IMAGE_EXTS),
+                allow_multiple=True,
+            )
+        except Exception as exc:
+            toast(f"打开文件失败：{exc}")
+            return
+        if not files:
+            return
+        from .service import spawn
+
+        launched = sum(1 for f in files if spawn.launch_window(f.path))
+        if launched == 0:
+            toast("无法启动新窗口")
+        elif launched > 1:
+            toast(f"已在新窗口打开 {launched} 张图片")
+        _ = _e
 
     def act_zoom_in(_e=None) -> None:
         st = app.current
@@ -615,6 +701,28 @@ def ImageViewerApp():
         app.current.interval = seconds
         sync_ui()
 
+    # ---------- 共享缓存诊断 ----------
+
+    def act_service_status(_e=None) -> None:
+        page.run_task(_load_service_status)
+
+    async def _load_service_status() -> None:
+        """读共享服务的统计信息（宿主 pid、命中率、缓存体积、预加载进度）。"""
+        st = app.current
+        stats = getattr(st.manager, "stats", None)
+        if stats is None:
+            set_service_info({
+                "role": "本地模式",
+                "note": "共享缓存未启用（Web 调试或 CSIV_SHARED=0）",
+            })
+            return
+        try:
+            info = await asyncio.get_running_loop().run_in_executor(None, stats)
+        except Exception as exc:
+            set_service_info({"role": "不可用", "error": str(exc)})
+            return
+        set_service_info(info or {})
+
     def act_delete(_e=None) -> None:
         if app.current.manager.files:
             set_show_delete(True)
@@ -630,6 +738,8 @@ def ImageViewerApp():
             return
         sync_ui()
         toast(f"已删除：{removed}")
+        # 删除后当前图变了：后台解码新的一张（共享缓存命中时几乎立刻返回）
+        await _load_current_async(st)
 
     async def act_exit(_e=None) -> None:
         """退出程序（Esc / 菜单「退出」，与 IrfanView 一致）。
@@ -667,6 +777,7 @@ def ImageViewerApp():
         "export_frame": lambda: act_export_frame(),
         "open_file": lambda: act_open_file(),
         "open_folder": lambda: act_open_folder(),
+        "open_new_window": lambda: act_open_new_window(),
         "fit_window": lambda: act_fit_window(),
         "actual_size": lambda: act_actual_size(),
         "delete": lambda: act_delete(),
@@ -1047,6 +1158,7 @@ def ImageViewerApp():
         controls=[
             _menu_item("打开图片", act_open_file, ft.Icons.IMAGE, "Ctrl+O"),
             _menu_item("打开文件夹", act_open_folder, ft.Icons.FOLDER_OPEN, "Ctrl+Shift+O"),
+            _menu_item("在新窗口打开", act_open_new_window, ft.Icons.OPEN_IN_NEW, "Ctrl+N"),
             ft.SubmenuButton(
                 content=ft.Text("文件关联", size=13),
                 controls=[
@@ -1104,6 +1216,7 @@ def ImageViewerApp():
             _menu_item("放大", act_zoom_in, ft.Icons.ZOOM_IN, "+"),
             _menu_item("缩小", act_zoom_out, ft.Icons.ZOOM_OUT, "-"),
             _menu_item("全屏", act_fullscreen, ft.Icons.FULLSCREEN, "F"),
+            _menu_item("共享缓存状态…", act_service_status, ft.Icons.MEMORY),
         ],
     )
 
@@ -1154,6 +1267,18 @@ def ImageViewerApp():
             ],
         )
         if assoc_action
+        else None
+    )
+    ft.use_dialog(
+        ft.AlertDialog(
+            modal=True,
+            title=ft.Text("共享缓存状态"),
+            content=ft.Text(_format_service_info(service_info), size=12.5, selectable=True),
+            actions=[
+                ft.TextButton("关闭", on_click=lambda _e: set_service_info(None)),
+            ],
+        )
+        if service_info is not None
         else None
     )
     ft.use_dialog(snack)

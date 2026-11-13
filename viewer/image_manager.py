@@ -1,10 +1,15 @@
 """图片管理器：文件扫描、自然排序、解码缓存、动图逐帧与显示层变换。
 
 纯逻辑模块，不依赖 Flet，便于复用与单元测试。
+
+本类同时承担两个角色：
+- 窗口进程里的**本地解码器**（动图逐帧必须在本地，见 `shared_manager`）；
+- 共享服务不可用时的**降级路径**。
+真正的解码/变换/编码细节在 `viewer.imaging`（纯函数层），这里只负责
+「打开哪些文件、缓存多少、当前显示哪一帧」这类有状态的事情。
 """
 from __future__ import annotations
 
-import base64
 import io
 import os
 import re
@@ -13,46 +18,11 @@ from pathlib import Path
 
 from PIL import Image, ImageOps
 
-# 支持的图片扩展名（小写）
-IMAGE_EXTS = {
-    # 主流格式
-    ".jpg", ".jpeg", ".jpe", ".jfif", ".png", ".bmp", ".gif", ".webp", ".tif", ".tiff",
-    # 特殊格式
-    ".psd",                                        # Photoshop（Pillow 原生）
-    ".svg",                                        # 矢量图（resvg 渲染）
-    ".heic", ".heif",                             # 高效图片格式（pillow-heif）
-    # 相机 RAW
-    ".cr2", ".cr3", ".nef", ".nrw", ".arw", ".srf", ".dng", ".raf", ".orf", ".rw2",
-    ".pef", ".srw", ".erf", ".3fr", ".mef", ".mrw", ".iiq", ".kdc", ".raw", ".x3f",
-}
-
-# 相机 RAW 扩展名（走 rawpy 解码）
-_RAW_EXTS = {
-    ".cr2", ".cr3", ".nef", ".nrw", ".arw", ".srf", ".dng", ".raf", ".orf", ".rw2",
-    ".pef", ".srw", ".erf", ".3fr", ".mef", ".mrw", ".iiq", ".kdc", ".raw", ".x3f",
-}
-
-# 注册 HEIC/HEIF 解码（可选依赖，缺失时给出友好提示）
-_HEIF_AVAILABLE = False
-try:
-    import pillow_heif
-
-    pillow_heif.register_heif_opener()
-    _HEIF_AVAILABLE = True
-except ImportError:
-    pass
-
-# 超大图支持：解除 Pillow 默认的解压炸弹限制（约 1.78 亿像素），
-# 超清图/长截图（如 1080x30000、100MP 照片）可正常打开。
-Image.MAX_IMAGE_PIXELS = None
-
-# 编码预算：超限图片按比例压缩后再编码，避免卡顿与内存爆炸。
-MAX_ENCODE_PIXELS = 40_000_000       # 编码像素上限（40MP）
-MAX_ENCODE_DIM = 16_000              # 编码最长边上限（16000px）
-_FLATTEN_ALPHA_PIXELS = 20_000_000   # 超大透明图压平为 JPEG（PNG 编码太慢）
+from . import imaging
+from .imaging import IMAGE_EXTS  # noqa: F401 —— 由本模块对外导出，兼容旧引用
 
 # 依赖文件句柄进行多帧 seek 的格式（其余格式完全解码后可释放句柄）
-_SEEK_FORMATS = {".gif", ".webp", ".tif", ".tiff"}
+_SEEK_FORMATS = imaging.SEEK_FORMATS
 
 _DIGIT_RE = re.compile(r"(\d+)")
 
@@ -314,8 +284,10 @@ class ImageManager:
         im = self._frame_image(self.index, self.current_frame)
         if im is None:
             return None, 0, 0
-        rendered = self._apply_transform(self._limit_size(im))
-        result = (self._to_data_uri(rendered), *rendered.size)
+        rendered = imaging.apply_transform(
+            imaging.limit_size(im), self.rotation, self.flip_h, self.flip_v
+        )
+        result = (imaging.to_data_uri(rendered), *rendered.size)
         self._encoded[key] = result
         if len(self._encoded) > 64:        # 防止组合无限膨胀
             self._encoded.clear()
@@ -390,14 +362,11 @@ class ImageManager:
         if idx in self._failed:
             return None
         try:
-            im = self._load_image(self.files[idx])
+            im = imaging.load_image(self.files[idx])
             if self.files[idx].suffix.lower() == ".png":
                 self._extract_apng(idx)          # APNG：Pillow 只读首帧，需单独解码
             # 单帧且非 seek 依赖格式：完全解码后释放文件句柄，避免占用文件
-            try:
-                n = int(getattr(im, "n_frames", 1) or 1)
-            except Exception:
-                n = 1
+            n = imaging.frame_count(im)
             if n <= 1 and self.files[idx].suffix.lower() not in _SEEK_FORMATS:
                 im.load()
                 fp = getattr(im, "fp", None)
@@ -430,7 +399,7 @@ class ImageManager:
         if self._apng_frames is not None:
             if frame >= len(self._apng_frames):
                 return None
-            return self._normalize_mode(self._apng_frames[frame])
+            return imaging.normalize_mode(self._apng_frames[frame])
         im = self._open(idx)
         if im is None:
             return None
@@ -440,7 +409,7 @@ class ImageManager:
         except Exception:
             return None
         cur = ImageOps.exif_transpose(cur)       # 按 EXIF 方向摆正照片
-        return self._normalize_mode(cur)
+        return imaging.normalize_mode(cur)
 
     def _extract_apng(self, idx: int) -> None:
         """检测并解码 APNG 帧列表（文件含 acTL 块才处理）。"""
@@ -469,100 +438,13 @@ class ImageManager:
         except Exception:
             self._apng_frames = None       # 非 APNG / 解码失败 → 按单帧处理
 
-    @staticmethod
-    def _load_image(path: Path) -> Image.Image:
-        """按扩展名路由解码器：RAW 走 rawpy、SVG 走 resvg，其余走 Pillow。
-
-        注意：不关闭文件句柄（多帧 seek 需要），由其缓存生命周期管理。
-        """
-        ext = path.suffix.lower()
-        if ext in _RAW_EXTS:
-            return _decode_raw(path)
-        if ext == ".svg":
-            return _decode_svg(path)
-        if ext in (".heic", ".heif") and not _HEIF_AVAILABLE:
-            raise RuntimeError("HEIC/HEIF 需要安装 pillow-heif：pip install pillow-heif")
-        return Image.open(path)
+    # ---------- 兼容旧接口（内部委托到 imaging 纯函数层） ----------
 
     @staticmethod
     def _normalize_mode(im: Image.Image) -> Image.Image:
-        """统一色彩模式：透明通道保留为 RGBA，其余转为 RGB。"""
-        if im.mode == "P":
-            return im.convert("RGBA" if "transparency" in im.info else "RGB")
-        if im.mode == "LA":
-            return im.convert("RGBA")
-        if im.mode not in ("RGB", "RGBA"):
-            return im.convert("RGB")
-        return im
+        """统一色彩模式（委托 imaging，保留旧名给子类/测试使用）。"""
+        return imaging.normalize_mode(im)
 
     def _apply_transform(self, im: Image.Image) -> Image.Image:
-        """对解码图应用旋转/翻转（仅显示层）。PIL 中正角度为逆时针。"""
-        if self.rotation:
-            im = im.rotate(-90 * self.rotation, expand=True)
-        if self.flip_h:
-            im = ImageOps.mirror(im)
-        if self.flip_v:
-            im = ImageOps.flip(im)
-        return im
-
-    @staticmethod
-    def _limit_size(im: Image.Image) -> Image.Image:
-        """超大图压缩到编码预算内（保持宽高比），避免编码/传输卡顿。
-
-        仅作用于显示层；导出当前帧仍使用全分辨率。
-        """
-        w, h = im.size
-        scale = 1.0
-        if w * h > MAX_ENCODE_PIXELS:
-            scale = min(scale, (MAX_ENCODE_PIXELS / (w * h)) ** 0.5)
-        if max(w, h) > MAX_ENCODE_DIM:
-            scale = min(scale, MAX_ENCODE_DIM / max(w, h))
-        if scale < 1.0:
-            im = im.resize((max(int(w * scale), 1), max(int(h * scale), 1)), Image.LANCZOS)
-        return im
-
-    @staticmethod
-    def _to_data_uri(im: Image.Image) -> str:
-        """编码为 data URI：带透明通道用 PNG，否则用高质量 JPEG。
-
-        超大透明图压平为 JPEG（PNG 编码太慢且体积巨大）。
-        """
-        buf = io.BytesIO()
-        if im.mode == "RGBA" and im.width * im.height > _FLATTEN_ALPHA_PIXELS:
-            bg = Image.new("RGB", im.size, (20, 20, 20))   # 与看图背景色一致
-            bg.paste(im, mask=im.getchannel("A"))
-            im = bg
-        if im.mode == "RGBA":
-            im.save(buf, format="PNG")
-            mime = "image/png"
-        else:
-            im.save(buf, format="JPEG", quality=88)
-            mime = "image/jpeg"
-        return f"data:{mime};base64,{base64.b64encode(buf.getvalue()).decode('ascii')}"
-
-
-def _decode_raw(path: Path) -> Image.Image:
-    """相机 RAW 解码：rawpy 出图（相机白平衡、自动亮度）。"""
-    try:
-        import rawpy
-    except ImportError:
-        raise RuntimeError("相机 RAW 需要安装 rawpy：pip install rawpy") from None
-    with rawpy.imread(str(path)) as raw:
-        rgb = raw.postprocess(use_camera_wb=True, no_auto_bright=False)
-    return Image.fromarray(rgb)
-
-
-def _decode_svg(path: Path) -> Image.Image:
-    """SVG 矢量图渲染为位图（resvg，内置 Rust 渲染引擎，无系统依赖）。"""
-    try:
-        import resvg
-    except ImportError:
-        raise RuntimeError("SVG 需要安装 resvg：pip install resvg") from None
-    opts = resvg.usvg.Options.default()
-    opts.resources_dir = str(path.parent)      # 支持相对路径引用外部资源
-    tree = resvg.usvg.Tree.from_str(path.read_text(encoding="utf-8"), opts)
-    png = resvg.render(tree, transform=(1.0, 0.0, 0.0, 1.0, 0.0, 0.0))
-    buf = io.BytesIO(png)
-    with Image.open(buf) as im:
-        im.load()
-    return im
+        """显示层旋转/翻转（委托 imaging）。"""
+        return imaging.apply_transform(im, self.rotation, self.flip_h, self.flip_v)
