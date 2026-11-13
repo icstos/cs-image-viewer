@@ -2,7 +2,7 @@
 
 界面只负责画，业务状态与「状态栏该写什么」在这里算清楚。这样：
 
-* 状态是普通 dataclass，几何用 :class:`ui.ViewTransform`（不可变、可复算）；
+* 状态是普通 dataclass，几何用 :class:`G.ViewTransform`（不可变、可复算）；
 * 文案格式化是纯函数，传一个假的 manager 就能单测，不必起窗口；
 * :class:`StatusSnapshot` 是三段式状态栏的唯一输入，界面与诊断读同一份数据。
 
@@ -16,7 +16,7 @@ import asyncio
 from dataclasses import dataclass, field
 from typing import Callable
 
-from ui import ViewRect, ViewSize, ViewTransform, format_zoom
+from .geometry import ViewRect, ViewSize, ViewTransform, format_zoom
 
 from .image_manager import ImageManager, format_size
 

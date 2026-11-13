@@ -22,6 +22,8 @@ from ui import FONT_SIZE, ICON_SIZE, RADIUS, SPACE
 from ui.core.tokens import PRIMARY_SEEDS
 from ui.display.media import MediaPalette
 
+from . import geometry as G
+
 # ─── 唯一色值输入 ────────────────────────────────────────────────────────
 #: 品牌色沿用 cs-ui 默认蓝：算出来的中性表面带一丝冷蓝相，接近中性灰但不发闷。
 BRAND_PRIMARY: str = PRIMARY_SEEDS["blue"]
@@ -43,11 +45,30 @@ C_MUTED = PALETTE.muted
 C_DIM = ui.Colors.with_opacity(0.62, C_TEXT)   # 空态图标 / 极次要说明
 C_PRIMARY = PALETTE.primary                    # 选中态 / 框选描边
 
+# ─── 媒体浮层：压在图片上的固定色，**不随明暗档变化** ────────────────────
+# 它压在任意图像上 —— 可能是纯白照片，也可能是纯黑夜景。跟着主题变成白底或
+# 浅灰底会在其中一种画面上消失，所以固定用「深色玻璃 + 亮图标 + 细亮描边」：
+# 白底靠黑玻璃读出边界，黑底靠白图标与描边读出形状。
+# 写成具名常量是刻意的：色值有理由，不是随手抄的匿名值。
+C_GLASS = ui.Colors.with_opacity(0.38, ui.Colors.BLACK)          # 常态玻璃
+C_GLASS_ACTIVE = ui.Colors.with_opacity(0.72, ui.Colors.BLACK)   # 悬停 / 聚焦
+C_GLASS_EDGE = ui.Colors.with_opacity(0.16, ui.Colors.WHITE)     # 1px 亮描边
+C_GLASS_OVERLAY = ui.Colors.with_opacity(0.08, ui.Colors.WHITE)  # 按下状态层
+C_GLASS_SHADOW = ui.Colors.with_opacity(0.45, ui.Colors.BLACK)   # 投影
+C_GLASS_ICON = ui.Colors.with_opacity(0.85, ui.Colors.WHITE)     # 常态图标
+C_GLASS_ICON_ACTIVE = ui.Colors.WHITE                            # 悬停图标
+
 # ─── 布局：全部落在 4px 网格上 ───────────────────────────────────────────
 MENU_H: float = float(SPACE["12"])             # 48
 STATUS_H: float = float(SPACE["8"])            # 32
-NAV_MARGIN: float = float(SPACE["3"]) + 2      # 14（贴边留白）
 CHROME_H: float = MENU_H + STATUS_H            # 80，非全屏时视口高度要减掉它
+#: 导航留白与按钮直径的**唯一事实源在 geometry**（那里同时拿它们做 nav_geometry
+#: 的默认值）。设计层只给业务名，避免两处各写一个 14 / 46 然后慢慢漂开。
+NAV_MARGIN: float = G.NAV_MARGIN                # 14（贴边留白）
+#: 玻璃按钮直径：44 是桌面端舒适点击目标下限，多 2px 让圆形不显小。
+GLASS_SIZE: float = G.NAV_SIZE                 # 46
+#: 箭头比常规图标大一档（28），46 的圆里才不显空。
+GLASS_ICON_SIZE: float = float(ICON_SIZE["2xl"]) + 4
 
 # ─── 排印 / 图标：只取 cs-ui 字阶与图标刻度 ──────────────────────────────
 FONT_MENU = FONT_SIZE["small"]                 # 12
@@ -87,6 +108,15 @@ def snapshot() -> dict[str, object]:
             "text": C_TEXT,
             "muted": C_MUTED,
             "dim": C_DIM,
+        },
+        # 浮层是固定色（不跟明暗档），单独一段说明它为什么不在这张色表里。
+        "overlay": {
+            "idle": C_GLASS,
+            "active": C_GLASS_ACTIVE,
+            "edge": C_GLASS_EDGE,
+            "icon": C_GLASS_ICON,
+            "size": GLASS_SIZE,
+            "icon_size": GLASS_ICON_SIZE,
         },
         "layout": {
             "menu_h": MENU_H,

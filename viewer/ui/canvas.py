@@ -1,8 +1,12 @@
-"""画布构件 —— 把 :class:`ui.ImageViewport` 与手势层装配起来。
+"""画布构件 —— 把 :class:`viewer.ui.viewport.ImageViewport`、玻璃翻页按钮与手势层装配起来。
 
-几何（倍率 / 平移 / 框选 / 滚轮意图）全部在 ``ui.core.geometry`` 里算，这里只做
-两件事：把结果交给视口渲染，把原始输入事件转交给 app.py 的动作层。构件本身无
-状态、无业务判断，可以单独构造来检查控件树。
+几何（倍率 / 平移 / 框选 / 滚轮意图 / 按钮位置）全部在 :mod:`viewer.geometry` 里算，
+这里只做三件事：把结果交给视口渲染、把本项目的浮层按钮塞进视口的 ``overlay``
+口子、把原始输入事件转交给 app.py 的动作层。构件本身无状态、无业务判断，可以
+单独构造来检查控件树。
+
+视口不画导航按钮 —— 皮肤是产品决策，它只提供 ``overlay``。玻璃按钮在
+:mod:`viewer.ui.glass`，位置仍取自同一层的 ``nav_geometry()``。
 
 手势绑定沿用 Flet 的 ``GestureDetector``：左键拖拽框选、区内单击放大、右键拖拽
 平移、滚轮翻页 / 滚动 / 缩放、双击切全屏。``drag_interval=16`` 把拖动事件节流到
@@ -17,6 +21,9 @@ from dataclasses import dataclass
 import ui
 
 from .. import design as D
+from .. import geometry as G
+from .glass import glass_nav_pair
+from .viewport import ImageViewport
 
 __all__ = ["CanvasHandlers", "build_canvas"]
 
@@ -42,10 +49,10 @@ class CanvasHandlers:
 def build_canvas(
     *,
     src: str | bytes | None,
-    image_size: ui.ViewSize,
-    viewport: ui.ViewSize,
-    view: ui.ViewTransform,
-    selection: ui.ViewRect | None,
+    image_size: G.ViewSize,
+    viewport: G.ViewSize,
+    view: G.ViewTransform,
+    selection: G.ViewRect | None,
     height: float,
     fullscreen: bool,
     handlers: CanvasHandlers,
@@ -56,8 +63,8 @@ def build_canvas(
 
     Args:
         src: 当前图片 data URI；``None`` 表示还没有图。
-        image_size / viewport: 图像尺寸与可视区尺寸（``ui.ViewSize``）。
-        view: 当前变换（``ui.ViewTransform``）。
+        image_size / viewport: 图像尺寸与可视区尺寸（``G.ViewSize``）。
+        view: 当前变换（``G.ViewTransform``）。
         selection: 框选矩形（视口坐标）；``None`` 不画。
         height: 图片区高度。非全屏时 = 窗口高 - 菜单栏 - 状态栏。
         fullscreen: 全屏时手势区 ``expand=True``，悬浮按钮离边更远。
@@ -65,7 +72,17 @@ def build_canvas(
         show_nav: 是否画左右翻页箭头；只有一张图时必须为 ``False``。
         placeholder: 无图占位；``None`` 只留深色底（启动留白，避免闪一下提示）。
     """
-    stage = ui.ImageViewport(
+    overlay = (
+        glass_nav_pair(
+            viewport=viewport,
+            on_prev=handlers.on_prev,
+            on_next=handlers.on_next,
+            fullscreen=fullscreen,
+        )
+        if show_nav
+        else None
+    )
+    stage = ImageViewport(
         src=src,
         image_size=image_size,
         viewport_size=viewport,
@@ -73,10 +90,7 @@ def build_canvas(
         selection=selection,
         background=D.C_CANVAS,
         placeholder=placeholder,
-        show_nav=show_nav,
-        on_prev=handlers.on_prev,
-        on_next=handlers.on_next,
-        fullscreen=fullscreen,
+        overlay=overlay,
         selection_color=D.C_PRIMARY,
     )
     return ui.GestureDetector(

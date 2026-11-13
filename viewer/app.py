@@ -12,8 +12,8 @@
 生命周期     ``use_effect`` 管动图、幻灯片、启动打开与页面事件
 ============ ==========================================================
 
-几何（倍率、平移、锚点缩放、框选放大、滚轮分派）在 ``ui.core.geometry`` 里是纯
-函数，可脱离窗口复算；渲染在 ``ui.ImageViewport`` 里，二者共用同一套坐标约定。
+几何（倍率、平移、锚点缩放、框选放大、滚轮分派）在 :mod:`viewer.geometry` 里是纯
+函数，可脱离窗口复算；渲染在 :mod:`viewer.ui.viewport` 里，二者共用同一套坐标约定。
 
 进程模型：本模块只负责**一个窗口**。图片来自 ``set_manager_factory`` 注入的
 `RemoteImageManager`（共享缓存）或 `ImageManager`（本地解码），接口完全一致。
@@ -30,6 +30,7 @@ from typing import Callable
 import ui
 
 from . import design as D
+from . import geometry as G
 from .image_manager import IMAGE_EXTS
 from .shortcuts import match
 from .state import (
@@ -87,15 +88,15 @@ def ImageViewerApp():
 
     # ── 界面镜像：统一由 sync_ui() 写入 ─────────────────────────────────
     img_src, set_img_src = ui.use_state(None)
-    image_size, set_image_size = ui.use_state(ui.ViewSize())
-    view, set_view = ui.use_state(ui.ViewTransform())
+    image_size, set_image_size = ui.use_state(G.ViewSize())
+    view, set_view = ui.use_state(G.ViewTransform())
     status, set_status = ui.use_state(StatusSnapshot())
     fullscreen, set_fullscreen = ui.use_state(False)
     slideshow_on, set_slideshow_on = ui.use_state(False)
     paused, set_paused = ui.use_state(False)
     anim_playing, set_anim_playing = ui.use_state(False)
     anim_paused, set_anim_paused = ui.use_state(False)
-    selection, set_selection = ui.use_state(None)          # ui.ViewRect | None
+    selection, set_selection = ui.use_state(None)          # G.ViewRect | None
     _, set_render_tick = ui.use_state(0)                    # 纯视图变化的强制重绘
     show_delete, set_show_delete = ui.use_state(False)
     assoc_action, set_assoc_action = ui.use_state(None)
@@ -125,10 +126,10 @@ def ImageViewerApp():
             set_selection(None)
         uri, w, h = app.manager.get_display()
         set_img_src(uri)
-        app.image_size = ui.ViewSize.of(w, h)
+        app.image_size = G.ViewSize.of(w, h)
         set_image_size(app.image_size)
         # 倍率变了要重新夹平移边界；clamp_pan 返回新对象，原样返回表示无需变化。
-        app.view = ui.clamp_pan(app.view, app.image_size, app.viewport)
+        app.view = G.clamp_pan(app.view, app.image_size, app.viewport)
         set_view(app.view)
         set_status(format_status(app.manager, app.view, app.image_size, app.viewport))
         set_fullscreen(app.fullscreen)
@@ -273,11 +274,11 @@ def ImageViewerApp():
             notify(f"已在新窗口打开 {launched} 张图片", tone="success")
 
     def act_zoom_in() -> None:
-        app.view = ui.zoom_by(app.view, app.image_size, app.viewport, ui.ZOOM_STEP)
+        app.view = G.zoom_by(app.view, app.image_size, app.viewport, G.ZOOM_STEP)
         sync_ui()
 
     def act_zoom_out() -> None:
-        app.view = ui.zoom_by(app.view, app.image_size, app.viewport, 1 / ui.ZOOM_STEP)
+        app.view = G.zoom_by(app.view, app.image_size, app.viewport, 1 / G.ZOOM_STEP)
         sync_ui()
 
     def act_fit_window() -> None:
@@ -572,7 +573,7 @@ def ImageViewerApp():
         )
         if not app.fullscreen:
             vh -= D.CHROME_H
-        app.viewport = ui.ViewSize.of(max(vw, 80), max(vh, 80))
+        app.viewport = G.ViewSize.of(max(vw, 80), max(vh, 80))
 
     def _on_resize(e) -> None:
         set_initial_size(e.width, e.height)
@@ -648,8 +649,8 @@ def ImageViewerApp():
 
     # ── 鼠标：滚轮 / 框选 / 平移 ───────────────────────────────────────
     def _on_scroll(e) -> None:
-        """三种意图由 ui.scroll_intent 判定，回调只负责执行。"""
-        intent = ui.scroll_intent(
+        """三种意图由 G.scroll_intent 判定，回调只负责执行。"""
+        intent = G.scroll_intent(
             app.image_size, app.viewport, app.view, e.scroll_delta.y,
             ctrl=app.ctrl_held or _ctrl_pressed(),
         )
@@ -657,11 +658,11 @@ def ImageViewerApp():
             return
         if intent.kind == "zoom":
             loc = e.local_position
-            anchor = ui.ViewPoint(
+            anchor = G.ViewPoint(
                 loc.x if loc is not None else app.viewport.width / 2,
                 loc.y if loc is not None else app.viewport.height / 2,
             )
-            app.view = ui.zoom_anchored(
+            app.view = G.zoom_anchored(
                 app.view, app.image_size, app.viewport, anchor, intent.factor
             )
             sync_ui()
@@ -669,12 +670,12 @@ def ImageViewerApp():
             page.run_task(_goto, intent.direction)
         else:
             _clear_selection()
-            app.view = ui.ViewTransform(
+            app.view = G.ViewTransform(
                 app.view.mode, app.view.zoom,
                 app.view.pan_x,
                 app.view.pan_y + (intent.delta if intent.direction < 0 else -intent.delta),
             )
-            app.view = ui.clamp_pan(app.view, app.image_size, app.viewport)
+            app.view = G.clamp_pan(app.view, app.image_size, app.viewport)
             set_view(app.view)
             set_render_tick(lambda tick: tick + 1)
 
@@ -682,8 +683,8 @@ def ImageViewerApp():
         app.sel_rect = None
         set_selection(None)
 
-    def _zoom_to_region(region: ui.ViewRect) -> None:
-        next_view = ui.zoom_to_region(
+    def _zoom_to_region(region: G.ViewRect) -> None:
+        next_view = G.zoom_to_region(
             app.view, app.image_size, app.viewport, region
         )
         if next_view == app.view:
@@ -696,7 +697,7 @@ def ImageViewerApp():
         region = app.sel_rect
         if region is None or e.local_position is None:
             return
-        point = ui.ViewPoint(e.local_position.x, e.local_position.y)
+        point = G.ViewPoint(e.local_position.x, e.local_position.y)
         if region.contains(point):
             _zoom_to_region(region)
         else:
@@ -707,14 +708,14 @@ def ImageViewerApp():
         if e.local_position is not None:
             x, y = e.local_position.x, e.local_position.y
             app.sel_drag_start = (x, y)
-            app.sel_rect = ui.ViewRect.from_corners(x, y, x, y)
+            app.sel_rect = G.ViewRect.from_corners(x, y, x, y)
             set_selection(app.sel_rect)
 
     def _on_pan_update(e) -> None:
         if app.sel_drag_start is None or e.local_position is None:
             return
         x0, y0 = app.sel_drag_start
-        app.sel_rect = ui.ViewRect.from_corners(x0, y0, e.local_position.x, e.local_position.y)
+        app.sel_rect = G.ViewRect.from_corners(x0, y0, e.local_position.x, e.local_position.y)
         set_selection(app.sel_rect)
 
     def _on_pan_end(_e) -> None:
@@ -730,13 +731,13 @@ def ImageViewerApp():
         if e.local_position is None or app.right_last is None:
             return
         lx, ly = e.local_position.x, e.local_position.y
-        app.view = ui.ViewTransform(
+        app.view = G.ViewTransform(
             app.view.mode, app.view.zoom,
             app.view.pan_x + lx - app.right_last[0],
             app.view.pan_y + ly - app.right_last[1],
         )
         app.right_last = (lx, ly)
-        app.view = ui.clamp_pan(app.view, app.image_size, app.viewport)
+        app.view = G.clamp_pan(app.view, app.image_size, app.viewport)
         set_view(app.view)
         set_render_tick(lambda tick: tick + 1)
 

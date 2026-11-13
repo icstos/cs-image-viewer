@@ -7,7 +7,7 @@
 覆盖四层契约：
 
 ============ ==========================================================
-几何         ``ui.core.geometry``：倍率 / 平移 / 锚点缩放 / 框选 / 滚轮意图
+几何         :mod:`viewer.geometry`：倍率 / 平移 / 锚点缩放 / 框选 / 滚轮意图
 菜单         :mod:`viewer.ui.menu`：动作键、快捷键表、状态联动、分发覆盖
 文案         :mod:`viewer.state`：状态栏三段、共享缓存诊断
 构件与迁移   控件树可构造；项目源码不再直接依赖底层框架包
@@ -26,9 +26,10 @@ sys.path.insert(0, str(ROOT))
 
 import ui
 
-from viewer import design
+from viewer import design, geometry as G
 from viewer.state import StatusSnapshot, format_service_info, format_status
-from viewer.ui import bars, canvas, dialogs, kit, menu
+from viewer.ui import bars, canvas, dialogs, glass, kit, menu
+from viewer.ui.viewport import ImageViewport
 
 PASS = 0
 FAIL: list[str] = []
@@ -68,71 +69,71 @@ class FakeManager:
 
 # ---------------------------------------------------------------------------
 def check_geometry() -> None:
-    section("几何（ui.core.geometry）")
-    image = ui.ViewSize.of(1920, 1080)
-    viewport = ui.ViewSize.of(900, 560)
-    fit = ui.ViewTransform()
+    section("几何（viewer.geometry）")
+    image = G.ViewSize.of(1920, 1080)
+    viewport = G.ViewSize.of(900, 560)
+    fit = G.ViewTransform()
 
-    s = ui.compute_scale(fit, image, viewport)
+    s = G.compute_scale(fit, image, viewport)
     check("适应窗口取较小比例", abs(s - 900 / 1920) < 1e-9, f"got {s}")
-    check("1:1 恒为 1", ui.compute_scale(ui.ViewTransform(mode="actual"), image, viewport) == 1.0)
-    check("适应宽度只看宽", abs(ui.compute_scale(ui.ViewTransform(mode="fit_width"), image, viewport) - 900 / 1920) < 1e-9)
-    check("无效尺寸退回 1", ui.compute_scale(fit, ui.ViewSize(), viewport) == 1.0)
-    check("倍率夹在边界内", ui.clamp_zoom(999) == ui.MAX_ZOOM and ui.clamp_zoom(0) == ui.MIN_ZOOM)
+    check("1:1 恒为 1", G.compute_scale(G.ViewTransform(mode="actual"), image, viewport) == 1.0)
+    check("适应宽度只看宽", abs(G.compute_scale(G.ViewTransform(mode="fit_width"), image, viewport) - 900 / 1920) < 1e-9)
+    check("无效尺寸退回 1", G.compute_scale(fit, G.ViewSize(), viewport) == 1.0)
+    check("倍率夹在边界内", G.clamp_zoom(999) == G.MAX_ZOOM and G.clamp_zoom(0) == G.MIN_ZOOM)
 
-    rect = ui.image_rect(image, viewport, fit)
+    rect = G.image_rect(image, viewport, fit)
     check("适应窗口后图片居中", abs(rect.top - (560 - 1080 * s) / 2) < 1e-9)
     check("图片矩形保持宽高比", abs(rect.width / rect.height - 1920 / 1080) < 1e-9)
 
-    panned = ui.ViewTransform(mode="custom", zoom=1.0, pan_x=9999, pan_y=-9999)
-    clamped = ui.clamp_pan(panned, image, viewport)
+    panned = G.ViewTransform(mode="custom", zoom=1.0, pan_x=9999, pan_y=-9999)
+    clamped = G.clamp_pan(panned, image, viewport)
     check("平移超界被夹住", clamped.pan_x < 9999 and clamped.pan_y > -9999)
-    check("已合法时返回原对象", ui.clamp_pan(clamped, image, viewport) is clamped)
-    small = ui.ViewSize.of(200, 100)
-    check("未溢出时强制居中", ui.clamp_pan(panned, small, viewport) == ui.ViewTransform("custom", 1.0, 0.0, 0.0))
+    check("已合法时返回原对象", G.clamp_pan(clamped, image, viewport) is clamped)
+    small = G.ViewSize.of(200, 100)
+    check("未溢出时强制居中", G.clamp_pan(panned, small, viewport) == G.ViewTransform("custom", 1.0, 0.0, 0.0))
 
-    anchor = ui.ViewPoint(450, 280)   # 视口中心：不会触发边界夹取
-    z0 = ui.compute_scale(fit, image, viewport)
-    r0 = ui.image_rect(image, viewport, fit)
-    pixel = ui.ViewPoint((anchor.x - r0.left) / z0, (anchor.y - r0.top) / z0)
-    zoomed = ui.zoom_anchored(fit, image, viewport, anchor, ui.ZOOM_STEP)
-    z1 = ui.compute_scale(zoomed, image, viewport)
-    r1 = ui.image_rect(image, viewport, zoomed)
+    anchor = G.ViewPoint(450, 280)   # 视口中心：不会触发边界夹取
+    z0 = G.compute_scale(fit, image, viewport)
+    r0 = G.image_rect(image, viewport, fit)
+    pixel = G.ViewPoint((anchor.x - r0.left) / z0, (anchor.y - r0.top) / z0)
+    zoomed = G.zoom_anchored(fit, image, viewport, anchor, G.ZOOM_STEP)
+    z1 = G.compute_scale(zoomed, image, viewport)
+    r1 = G.image_rect(image, viewport, zoomed)
     check("锚点缩放改变了倍率", z1 > z0)
     check("锚点下的图像像素不动",
           abs(r1.left + pixel.x * z1 - anchor.x) < 1e-6
           and abs(r1.top + pixel.y * z1 - anchor.y) < 1e-6)
     # 贴边锚点在「图片几乎没溢出」时会算出一个越界的平移；clamp_pan 优先保证
     # 图片边缘不进视口，因此锚点精度让位于边界 —— 这是刻意的取舍。
-    edge = ui.zoom_anchored(fit, image, viewport, ui.ViewPoint(10, 10), ui.ZOOM_STEP)
-    check("边界夹取优先于贴边锚点", ui.clamp_pan(edge, image, viewport) == edge)
+    edge = G.zoom_anchored(fit, image, viewport, G.ViewPoint(10, 10), G.ZOOM_STEP)
+    check("边界夹取优先于贴边锚点", G.clamp_pan(edge, image, viewport) == edge)
     check("缩放进入 custom 模式", zoomed.mode == "custom")
     check("到上下限时原样返回",
-          ui.zoom_anchored(ui.ViewTransform("custom", ui.MAX_ZOOM), image, viewport,
-                           anchor, 2.0).zoom == ui.MAX_ZOOM)
-    check("键盘缩放从当前倍率起步", ui.zoom_by(fit, image, viewport, ui.ZOOM_STEP).zoom < 1.0)
+          G.zoom_anchored(G.ViewTransform("custom", G.MAX_ZOOM), image, viewport,
+                           anchor, 2.0).zoom == G.MAX_ZOOM)
+    check("键盘缩放从当前倍率起步", G.zoom_by(fit, image, viewport, G.ZOOM_STEP).zoom < 1.0)
 
-    tiny = ui.ViewRect.from_corners(10, 10, 12, 12)
-    check("过小框选被忽略", ui.zoom_to_region(fit, image, viewport, tiny) is fit)
-    region = ui.ViewRect.from_corners(200, 100, 500, 300)
-    region_view = ui.zoom_to_region(fit, image, viewport, region)
-    check("框选放大提高倍率", ui.compute_scale(region_view, image, viewport) > z0)
-    check("框选后仍在边界内", ui.clamp_pan(region_view, image, viewport) == region_view)
-    check("矩形由任意方向两点定出", ui.ViewRect.from_corners(500, 300, 200, 100) == region)
-    check("点命中判定", region.contains(ui.ViewPoint(250, 150)) and not region.contains(ui.ViewPoint(10, 10)))
+    tiny = G.ViewRect.from_corners(10, 10, 12, 12)
+    check("过小框选被忽略", G.zoom_to_region(fit, image, viewport, tiny) is fit)
+    region = G.ViewRect.from_corners(200, 100, 500, 300)
+    region_view = G.zoom_to_region(fit, image, viewport, region)
+    check("框选放大提高倍率", G.compute_scale(region_view, image, viewport) > z0)
+    check("框选后仍在边界内", G.clamp_pan(region_view, image, viewport) == region_view)
+    check("矩形由任意方向两点定出", G.ViewRect.from_corners(500, 300, 200, 100) == region)
+    check("点命中判定", region.contains(G.ViewPoint(250, 150)) and not region.contains(G.ViewPoint(10, 10)))
 
-    check("Ctrl+滚轮 = 缩放", ui.scroll_intent(image, viewport, fit, -100, ctrl=True).kind == "zoom")
+    check("Ctrl+滚轮 = 缩放", G.scroll_intent(image, viewport, fit, -100, ctrl=True).kind == "zoom")
     check("上滚放大 / 下滚缩小",
-          ui.scroll_intent(image, viewport, fit, -100, ctrl=True).factor > 1
-          and ui.scroll_intent(image, viewport, fit, 100, ctrl=True).factor < 1)
-    check("图片全可见时翻页", ui.scroll_intent(image, viewport, fit, 100).kind == "page")
-    check("上滚翻上一张", ui.scroll_intent(image, viewport, fit, -100).direction == -1)
-    overflow = ui.ViewTransform(mode="custom", zoom=3.0)
-    check("图片溢出时滚动浏览", ui.scroll_intent(image, viewport, overflow, 100).kind == "pan")
-    check("零增量不产生意图", ui.scroll_intent(image, viewport, fit, 0).kind == "none")
-    check("全屏时按钮离边更远", ui.nav_geometry(viewport, fullscreen=True)[0] > ui.nav_geometry(viewport)[0])
-    check("倍率文案带模式", "适应" in ui.format_zoom(fit, image, viewport))
-    check("1:1 文案写 100%", ui.format_zoom(ui.ViewTransform(mode="actual"), image, viewport) == "100%")
+          G.scroll_intent(image, viewport, fit, -100, ctrl=True).factor > 1
+          and G.scroll_intent(image, viewport, fit, 100, ctrl=True).factor < 1)
+    check("图片全可见时翻页", G.scroll_intent(image, viewport, fit, 100).kind == "page")
+    check("上滚翻上一张", G.scroll_intent(image, viewport, fit, -100).direction == -1)
+    overflow = G.ViewTransform(mode="custom", zoom=3.0)
+    check("图片溢出时滚动浏览", G.scroll_intent(image, viewport, overflow, 100).kind == "pan")
+    check("零增量不产生意图", G.scroll_intent(image, viewport, fit, 0).kind == "none")
+    check("全屏时按钮离边更远", G.nav_geometry(viewport, fullscreen=True)[0] > G.nav_geometry(viewport)[0])
+    check("倍率文案带模式", "适应" in G.format_zoom(fit, image, viewport))
+    check("1:1 文案写 100%", G.format_zoom(G.ViewTransform(mode="actual"), image, viewport) == "100%")
 
 
 # ---------------------------------------------------------------------------
@@ -169,9 +170,9 @@ def check_menu() -> None:
 # ---------------------------------------------------------------------------
 def check_text() -> None:
     section("状态文案（state）")
-    image = ui.ViewSize.of(1920, 1080)
-    viewport = ui.ViewSize.of(900, 560)
-    snap = format_status(FakeManager(), ui.ViewTransform(), image, viewport)
+    image = G.ViewSize.of(1920, 1080)
+    viewport = G.ViewSize.of(900, 560)
+    snap = format_status(FakeManager(), G.ViewTransform(), image, viewport)
     check("三段式文件名", snap.name == "photo_001.jpg")
     check("中段含分辨率", "1920×1080" in snap.detail)
     check("右段含页码与倍率", "3 / 12" in snap.position and "%" in snap.position)
@@ -181,7 +182,7 @@ def check_text() -> None:
         def info(self) -> dict:
             return {"name": "", "w": 0, "h": 0, "size": 0, "frames": 0, "pos": 0, "total": 0}
 
-    empty = format_status(Empty(), ui.ViewTransform(), ui.ViewSize(), viewport)
+    empty = format_status(Empty(), G.ViewTransform(), G.ViewSize(), viewport)
     check("空窗口不写 0 / 0", empty.position == "" and empty.detail == "")
     check("状态快照可比较", StatusSnapshot() == StatusSnapshot("", "", ""))
     check("无数据诊断有兜底", format_service_info(None) == "（无数据）")
@@ -195,6 +196,11 @@ def check_text() -> None:
     check("色表可由品牌色复算", ui.MediaPalette.derive(design.BRAND_PRIMARY, mode=design.MODE).as_dict() == shot["colors"])
     check("布局高度落在网格上", design.MENU_H % 4 == 0 and design.STATUS_H % 4 == 0)
     check("chrome 高度等于两段之和", design.CHROME_H == design.MENU_H + design.STATUS_H)
+    # 浮层色不跟明暗档走，所以单独成段；快照里必须能查到，否则「配色只有一处」就断了。
+    check("浮层色值进入设计快照",
+          shot["overlay"]["size"] == design.GLASS_SIZE
+          and shot["overlay"]["idle"] == design.C_GLASS,
+          f'got {shot["overlay"]}')
 
 
 # ---------------------------------------------------------------------------
@@ -213,30 +219,50 @@ def check_widgets() -> None:
     check("确认框内容由调用方给", dialog.content is not None)
     check("空态可构造", len(kit.empty_stage().controls) == 3)
     stage = canvas.build_canvas(
-        src=None, image_size=ui.ViewSize(), viewport=ui.ViewSize.of(900, 560),
-        view=ui.ViewTransform(), selection=None, height=560, fullscreen=False,
+        src=None, image_size=G.ViewSize(), viewport=G.ViewSize.of(900, 560),
+        view=G.ViewTransform(), selection=None, height=560, fullscreen=False,
         handlers=canvas.CanvasHandlers(), placeholder=kit.empty_stage(),
     )
     check("画布可构造", stage.height == 560)
     with_nav = canvas.build_canvas(
-        src="data:image/png;base64,AAAA", image_size=ui.ViewSize.of(1600, 900),
-        viewport=ui.ViewSize.of(900, 560), view=ui.ViewTransform(),
-        selection=ui.ViewRect.from_corners(10, 10, 100, 100), height=560,
+        src="data:image/png;base64,AAAA", image_size=G.ViewSize.of(1600, 900),
+        viewport=G.ViewSize.of(900, 560), view=G.ViewTransform(),
+        selection=G.ViewRect.from_corners(10, 10, 100, 100), height=560,
         fullscreen=False, show_nav=True,
         handlers=canvas.CanvasHandlers(on_prev=lambda e: None, on_next=lambda e: None),
     )
-    # 背景 + 图像 + 选区 + 左右两枚玻璃按钮 = 5 层
+    # 背景 + 图像 + 选区 + 左右两枚浮层按钮 = 5 层
     check("画布层级顺序正确", len(with_nav.content.controls) == 5,
           f"got {len(with_nav.content.controls)}")
-    # 渲染端要求 IconButton 有 icon 或可见 content，Python 侧构造不报错。
-    # 单图时导航按钮隐藏，启动冒烟会漏掉这条路径，必须在控件树上显式断言。
-    nav_buttons = [c for c in with_nav.content.controls
-                   if isinstance(c, ui.GlassIconButton)]
+    # 按钮皮肤归本项目（viewer.ui.glass），视口只负责把它们摆进 overlay 层。
+    # 渲染端要求 IconButton 有可见图标，而 Python 侧构造不报错；单图时导航隐藏，
+    # 启动冒烟会漏掉这条路径，所以必须在控件树上显式断言。
+    nav_buttons = [c for c in with_nav.content.controls if isinstance(c, ui.IconButton)]
     check("两枚翻页按钮都带图标",
           len(nav_buttons) == 2 and all(b.icon is not None for b in nav_buttons),
           f"got {[getattr(b, 'icon', None) for b in nav_buttons]}")
-    check("图标没被位置参数塞进 tooltip",
-          all(not b.tooltip for b in nav_buttons))
+    check("按钮尺寸取自设计层",
+          all(b.width == design.GLASS_SIZE and b.height == design.GLASS_SIZE
+              for b in nav_buttons))
+    check("三态配色交给渲染端",
+          all(set(b.style.bgcolor) == {ui.ControlState.DEFAULT,
+                                       ui.ControlState.HOVERED,
+                                       ui.ControlState.DISABLED}
+              for b in nav_buttons))
+    check("不给 tooltip（贴边会被裁）",
+          all(b.tooltip is None for b in nav_buttons))
+
+    # 只有一侧回调时不该画第二枚 —— 点了没反应的箭头比没有更糟。
+    single = glass.glass_nav_pair(viewport=G.ViewSize.of(900, 560),
+                                  on_prev=lambda e: None)
+    check("单侧回调只画一枚", len(single) == 1, f"got {len(single)}")
+    check("无回调不画按钮", glass.glass_nav_pair(viewport=G.ViewSize.of(900, 560)) == [])
+
+    import inspect
+    viewport_params = set(inspect.signature(ImageViewport).parameters)
+    check("视口不再替调用方定按钮皮肤",
+          "overlay" in viewport_params and "show_nav" not in viewport_params,
+          f"got {sorted(viewport_params)}")
 
     sources = [ROOT / "main.py", *sorted((ROOT / "viewer").rglob("*.py"))]
     direct = []
