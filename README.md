@@ -1,9 +1,11 @@
 # ImageViewer
 
-基于 Python Flet 1.1 + 本地组件库 **cs-ui**（Python 包名 `ui`）的桌面端轻量看图软件，
+基于 Python 3.12 + Flet 1.1 + 本地组件库 **cs-ui**（Python 包名 `ui`）的桌面端轻量看图软件，
 对标 IrfanView 基础交互：流畅、键盘友好、Windows 优先。
 
-界面层只 `import ui`，不再直接依赖 `flet`；通用组件沉淀在 cs-ui，详见「界面架构」。
+代码按 **MVVM + 分层依赖倒置** 组织成五层（`models` / `infra` / `service` / `viewmodel` /
+`view`），依赖单向 `View → ViewModel → Service → Infra`，各层均可依赖 `models`。
+界面层只 `import ui`，不直接依赖 `flet`。详见「分层架构」。
 
 ## 运行
 
@@ -19,7 +21,8 @@ py -3.12 -m pip install -e ".[formats]"   # 基础 + 全部特殊格式（HEIC/R
 py -3.12 main.py                # 启动空窗口
 py -3.12 main.py <图片或文件夹>  # 启动并直接打开
 imageviewer                     # 安装后可直接用控制台脚本启动
-imageviewer-assoc               # “打开方式”文件关联注册工具（见下）
+imageviewer-assoc status        # “打开方式”文件关联工具（见下）
+imageviewer-daemon              # 只跑无窗口的共享缓存主进程（开发/调试）
 ```
 
 可选依赖分组：
@@ -85,11 +88,11 @@ flet build windows --python-version 3.12      # 产物在 build/windows/
 | --- | --- |
 | `[tool.flet.app] hide_window_on_start = true` | 客户端窗口创建后**不显示**，等 Python 布置好界面再亮出来 |
 | `[tool.flet.boot_screen.flet]` | 启动屏底色/转圈全设成深色，任何提前显示的帧都不会是白色 |
-| `[tool.flet.compile] app = true` | 打包时把 `main.py` / `viewer/*.py` 预编译成 `.pyc`，内嵌解释器启动更快 |
+| `[tool.flet.compile] app = true` | 打包时把 `main.py` / `imageviewer/**/*.py` 预编译成 `.pyc`，内嵌解释器启动更快 |
 
-启动屏 `bgcolor` 必须与 `viewer/design.py` 的 `C_SURFACE` 一致（当前 `#141518`，
+启动屏 `bgcolor` 必须与 `imageviewer/view/design.py` 的 `C_SURFACE` 一致（当前 `#141518`，
 由 `MediaPalette.derive()` 推导）。静态 TOML 无法 import 运行时色表，
-由 `tools/ui_logic_smoke.py` 的「启动屏底色 = 窗口底色」断言守住，换品牌色时同步改。
+由 `tools/layered_smoke.py` 的「启动屏底色 = 窗口底色」断言守住，换品牌色时同步改。
 
 `main.py` 的启动顺序是「先布置、后显示」：构建 UI 树 → 一次性下发窗口尺寸/最小尺寸/
 主题/底色（窗口仍隐藏）→ 居中 → 把标题栏切成深色 → 最后显示。
@@ -143,8 +146,8 @@ py -3.12 main.py a.jpg          # 自动拉起主进程 + 窗口1（窗口1 是�
 py -3.12 main.py b.png          # 再开一个窗口进程，直接接入同一个主进程
 # 程序内：文件 → 在新窗口打开（Ctrl+N）；双击不同图片效果相同
 
-py -3.12 -m viewer.daemon -v        # 手动前台跑主进程（开发/调试）
-py -3.12 -m viewer.daemon --detach  # 分离到后台
+py -3.12 -m imageviewer.infra.shared.daemon -v        # 手动前台跑主进程（开发/调试）
+py -3.12 -m imageviewer.infra.shared.daemon --detach  # 分离到后台
 ```
 
 环境变量：`CSIV_SHARED=0` 关闭共享（退回单进程本地解码，便于对比性能）；
@@ -153,10 +156,10 @@ py -3.12 -m viewer.daemon --detach  # 分离到后台
 ### 自检（都不需要开窗口）
 
 ```bash
-py -3.12 tools/service_smoke.py         # 命中/共享/预加载/迁移/降级，39 项断言
+py -3.12 tools/layered_smoke.py         # 分层约束 + 各层行为 + 装配一致性，151 项断言
+py -3.12 tools/service_smoke.py         # 命中/共享/预加载/迁移/降级，40 项断言
 py -3.12 tools/election_smoke.py <图片>  # 两进程同时启动：恰好一个主进程，另一方命中
 py -3.12 tools/lock_check.py            # 单实例锁互斥（4 进程抢同一把锁）
-py -3.12 tools/ui_logic_smoke.py        # 界面层几何/菜单/文案/构件/配置一致性，80 项断言
 ```
 
 带窗口的启动冒烟：`CSIV_SMOKE=1 CSIV_TIMING=1 py -3.12 main.py <图片>`，
@@ -169,19 +172,28 @@ py -3.12 tools/ui_visual_check.py <图片目录>   # 多图：灰块 / 溢出 / 
 py -3.12 tools/ui_visual_check.py               # 空窗口对照
 ```
 
-它数 ErrorWidget 灰块占比、Flutter 溢出黄纹像素、左右箭头带的亮图标像素，
-把「构造期通过 ≠ 渲染期通过」这类只在真机暴露的问题变成可断言的数字。
+它数 ErrorWidget 灰块占比、Flutter 溢出黄纹像素、左右箭头带的亮图标像素，并用
+「顶栏 / 底栏的面板底色是否在位」判定抓帧是否有效，把「构造期通过 ≠ 渲染期通过」
+这类只在真机暴露的问题变成可断言的数字。
+
+两个真机坑已固化在脚本里，改它之前先读这两段注释：
+
+- **抓帧要按整窗开位图再裁客户区**：`PrintWindow` 会把标题栏一起画进 DC，按客户区
+  开位图等于把整窗画进偏小的画布 —— 底部状态栏整条被裁掉，看起来像布局挤爆了；
+- **窗口不随 python 退出**：开发模式下窗口属于 `flet.exe` 客户端进程，脚本必须
+  显式关窗（必要时结束那个客户端），否则下一次运行会抓到断线重连的白色引导页。
 
 ## 文件关联（右键“打开方式” / 设为默认看图程序）
 
 ```bash
 flet build windows --python-version 3.12  # 产物在 build/windows/
-py -3.12 -m viewer.file_assoc install     # 注册“打开方式”+ 右键菜单（免管理员）
-py -3.12 -m viewer.file_assoc status      # 查看当前关联状态
-py -3.12 -m viewer.file_assoc uninstall   # 全部撤销
+py -3.12 -m imageviewer.infra.association install     # 注册“打开方式”+ 右键菜单（免管理员）
+py -3.12 -m imageviewer.infra.association status      # 查看当前关联状态
+py -3.12 -m imageviewer.infra.association uninstall   # 全部撤销
+imageviewer-assoc status                              # 安装后等价的控制台脚本
 
 # 产物名与 pyproject 声明的 artifact 不一致时（例如 build 时加了 --artifact），显式指定：
-py -3.12 -m viewer.file_assoc install --exe "build\windows\图片查看器.exe"
+py -3.12 -m imageviewer.infra.association install --exe "build\windows\图片查看器.exe"
 ```
 
 全部写在 `HKCU`，不需要管理员权限。注册内容：34 种图片格式的 `OpenWithProgids`、
@@ -270,41 +282,59 @@ Python 才会真正启动。`main.py` 按 `env → 请求文件 → argv` 顺序
 - 底部状态栏：文件名 / 分辨率+大小 / 页码+实时缩放百分比；全屏隐藏全部 UI
 - 界面统一使用随包分发的本地字体 `assets/fonts/AlibabaPuHuiTi-3-55-Regular.otf`（阿里普惠体）：不依赖目标机器装了什么中文字体，菜单、状态栏、弹窗、提示的文字风格一致；字体路径相对 `assets/` 声明，开发运行与 `flet build` 产物同一套写法
 
-## 界面架构（`ui` 门面 / 可复算契约）
+## 分层架构（MVVM + 依赖倒置）
 
-界面层**只 `import ui`**，源码里不出现 `import flet` / `from flet ...`
-（由 `tools/ui_logic_smoke.py` 断言守住）。`ui` 是 cs-ui 的懒加载门面：
+依赖只朝一个方向走，各层都能站在 `models` 上：
+
+```
+        ┌──────────────────────────────────────────────────────────┐
+        │ models   纯数据：几何规则 / 状态枚举 / 动作表 / 格式白名单 │
+        └──────────────────────────────────────────────────────────┘
+              ▲            ▲              ▲              ▲
+   ┌──────────┴───┐ ┌──────┴─────┐ ┌──────┴──────┐ ┌─────┴──────┐
+   │ infra        │ │ service    │ │ viewmodel   │ │ view       │
+   │ 技术实现     │◀│ 业务编排   │◀│ 界面状态     │◀│ 声明式渲染 │
+   │ PIL/缓存/注册表│ │ 只认端口协议│ │ 纯 Python 类 │ │ 只 import ui│
+   └──────────────┘ └────────────┘ └─────────────┘ └────────────┘
+```
+
+`View → ViewModel → Service → Infra`，禁止跨层与反向依赖，由
+`tools/layered_smoke.py` 用 `ast` 还原相对导入后逐条断言（含「包内不出现
+`import flet`」「models 只依赖标准库」）。
+
+| 层 | 目录 | 职责 | 关键约定 |
+| --- | --- | --- | --- |
+| models | `imageviewer/models/` | `geometry`（倍率/平移/锚点缩放/框选/滚轮意图/按钮定位）、`media`（变换与探测结果）、`actions`（动作枚举 + 间隔表）、`view_state`（`ViewerState` 冻结 dataclass）、`diagnostics`、`formats`（格式白名单**单一事实源**） | 零 IO、零 UI；`__init__` 不 import 任何子层，因此「不开窗口也能断言几何」 |
+| infra | `imageviewer/infra/` | `imaging`（解码/变换/编码纯函数）、`catalog`（目录扫描）、`display/local|shared`（显示数据来源）、`shared/*`（常驻主进程 + 线协议 + 磁盘/内存缓存）、`paths`、`trash`、`association`、`platform`、`windows`（DWM/看门狗）、`procs`、`concurrency` | 只封装技术细节，不含业务判断；对外暴露的是能力，不是库 |
+| service | `imageviewer/service/` | `ViewerService`（装配 + `load_current` / `open_in_new_windows` / `install_association` / `service_report`）、`Gallery`（打开/扫描/翻页/变换/删除）、`ports.py`（`DisplayProvider` / `FileTrash` / `AssociationStore` / `PlatformInfo` / `ProcessLauncher`，全部 `runtime_checkable`）、`diagnostics` | 只依赖抽象：换回收站实现、换显示来源都在 `main.py` 一行之内 |
+| viewmodel | `imageviewer/viewmodel/` | `ViewerViewModel`（`state` / `subscribe` / `dispatch` / 手势与缩放 / 播放循环 / 对话框请求 / 导出 / 删除 / 文件关联）、`formatting`（状态栏与诊断文案）、`ports.py`（`BackgroundRunner` / `TaskScheduler` / `ViewerFacade`） | 纯 Python 类，**不认识任何控件**；后台循环由状态差异驱动启停（`_reconcile_loops`） |
+| view | `imageviewer/view/` | `app.py`（根组件：装配 + 事件分发 + effect）、`design`（设计令牌唯一投影）、`kit` / `glass` / `viewport` / `canvas` / `bars` / `dialogs` / `menu` / `keymap` / `scheduler` | 只 `import ui`；`UI = f(state)`，控件树冻结，副作用一律由 `use_effect` 声明 |
+
+三条把「分层」从口号变成可执行规则的设计：
+
+1. **需要视图协助的输入写成状态**。选文件 / 选目录 / 多选 / 存盘都会落成一个
+   `RequestKind` 状态，视图观察到就弹对话框，结果回填 `submit_pick` / `submit_save` /
+   `cancel_request`。viewmodel 因此不必知道「对话框长什么样」，也不必持有控件。
+2. **副作用由状态派生**。全屏、提示、弹窗、关窗都是 `use_effect(deps=[状态字段])`：
+   按钮只翻状态，真正设置窗口属性的是 effect，于是无论谁改了状态（菜单、快捷键、
+   双击）界面都会跟上。
+3. **组合根只有 `main.py`**。它认识全部具体实现（`SharedDisplay` / `TrashBin` /
+   `WindowsAssociation` / `SystemPlatform` / `WindowLauncher` / `AsyncioRunner` /
+   `PageTaskScheduler`），其余文件都只依赖抽象。
+
+`view` 层仍然只 `import ui`，源码里不出现 `import flet`。`ui` 是 cs-ui 的懒加载门面：
 先解析 `ui` 子模块与组件注册表，未命中才回退到 `flet` 的公开名。
-因此「用 `ui.Text`」和「用 `ui.MenuBar`」是同一套写法，新增组件不必改调用方。
-
-分层是单向的，越往下越纯、越容易测：
-
-```
-viewer/geometry.py   视图几何：倍率 / 平移 / 锚点缩放 / 框选放大 / 滚轮意图 / 按钮定位
-                     （纯计算，零 UI 依赖，可脱离窗口复算）
-viewer/design.py     设计令牌唯一事实源：品牌色 → MediaPalette → C_* / 尺寸 / snapshot()
-viewer/state.py      AppState 与状态栏文案格式化（纯函数，无控件）
-viewer/ui/kit.py     UI 词汇：文本 / 按钮 / 空态 / 提示
-viewer/ui/glass.py   玻璃翻页按钮（压在图片上的浮层，纯工厂，无隐藏签名）
-viewer/ui/viewport.py 图片视口四层渲染：背景 / 图像 / 框选 / 浮层
-viewer/ui/menu.py    菜单纯数据（MenuAction/MenuSection）+ 快捷键表 + 分发校验
-viewer/ui/dialogs.py 确认框 / 诊断框构件
-viewer/ui/canvas.py  画布装配：视口 + 浮层 + 手势
-viewer/ui/bars.py    菜单栏 / 三段式状态栏
-viewer/app.py        状态、事件、生命周期、装配（@ui.component）
-main.py              窗口启动、主题下发、共享服务 bootstrap
-```
 
 为本项目抽象、已沉淀到 cs-ui 的公共能力（其它项目可直接用）：
 
 | cs-ui 能力 | 用途 |
 | --- | --- |
-| `ui.core.tokens` / `ui.MediaPalette` | 设计令牌与配色引擎；`viewer/design.py` 的唯一色值输入 |
+| `ui.core.tokens` / `ui.MediaPalette` | 设计令牌与配色引擎；`imageviewer/view/design.py` 的唯一色值输入 |
 | `ui.MenuBar` / `MenuAction` / `MenuSection` | 数据驱动的桌面下拉菜单栏，快捷键用 `ui.Kbd` 键帽呈现；`shortcut_map()` / `validate_sections()` 可查询可断言 |
 | `ui.StatusBar(center=...)` | 三段式状态栏（在原两段式上扩展，旧用法向后兼容） |
 
-**刻意留在项目里的**：视图几何（`viewer/geometry.py`）、图片视口（`viewer/ui/viewport.py`）
-与玻璃翻页按钮（`viewer/ui/glass.py`）。三者都曾进过 cs-ui，2026-11-14 全部撤回。
+**刻意留在项目里的**：视图几何（`models/geometry.py`）、图片视口（`view/viewport.py`）
+与玻璃翻页按钮（`view/glass.py`）。三者都曾进过 cs-ui，2026-11-14 全部撤回。
 
 判断标准是「这是规则，还是取舍」：
 
@@ -317,16 +347,18 @@ main.py              窗口启动、主题下发、共享服务 bootstrap
 cs-ui 只留真正跨产品一致的部分：设计令牌、配色引擎、菜单栏、状态栏、对话框、表单控件。
 这条边界的好处是**改规则不用惊动任何人** —— 本项目的坐标约定就是本项目的。
 
-`viewer/ui/glass.py` 用纯工厂函数而不是 `@ui.control` 子类，是同一种克制：子类多一个
+`view/glass.py` 用纯工厂函数而不是 `@ui.control` 子类，是同一种克制：子类多一个
 字段就会打乱 `IconButton` 的 `__init__` 参数顺序，位置参数被悄悄吃掉，直到挂树才报
 英文断言。工厂没有隐藏的签名顺序。
 
 给测试与 Agent 的复算入口（都可离线跑、可断言）：
 
 ```bash
-py -3.12 tools/ui_logic_smoke.py
-py -3.12 -c "from viewer import design; print(design.snapshot())"        # 色表 / 布局 / 字号快照
-py -3.12 -c "from viewer.ui import menu; print(menu.shortcut_table())"   # 快捷键表
+py -3.12 tools/layered_smoke.py
+py -3.12 -c "from imageviewer.view import design; print(design.snapshot())"      # 色表 / 布局 / 字号快照
+py -3.12 -c "from imageviewer.view import menu; print(menu.shortcut_table())"    # 快捷键表
+py -3.12 -c "from imageviewer.models import geometry as G; \
+             print(G.compute_scale(G.ViewTransform(), G.ViewSize.of(1600,1000), G.ViewSize.of(900,560)))"  # 0.56
 ```
 
 `ui-mcp` 已收录上表中的 cs-ui 组件，支持中文别名检索。在 cs-ui 侧新增或改动组件后，
@@ -334,53 +366,71 @@ py -3.12 -c "from viewer.ui import menu; print(menu.shortcut_table())"   # 快�
 `ui/core/catalog.py`、`ui_mcp/aliases.py` 与相应子包 `__init__.py`，
 再执行 `python -m ui_mcp build` 与 `python scripts/check_all.py`。
 
-`viewer/geometry.py` 与 `viewer/ui/*` 不在 `ui-mcp` 索引里 —— 它们只服务本项目，
-查阅靠模块文档与 `tools/ui_logic_smoke.py` 的断言。
+`models/geometry.py` 与 `view/*` 不在 `ui-mcp` 索引里 —— 它们只服务本项目，
+查阅靠模块文档与 `tools/layered_smoke.py` 的断言。
 
 ## 结构
 
 ```
 pyproject.toml        依赖与打包配置（PEP 621 + [tool.flet]）
-main.py               入口（角色分发：窗口 / 主进程；启动路径：env / 请求文件 / argv）
+main.py               唯一组合根（装配五层；角色分发：窗口 / 主进程；启动路径：env / 请求文件 / argv）
 assets/fonts/         随包字体（AlibabaPuHuiTi-3-55-Regular.otf，全局界面字体）
 assets/runtime/       随包解释器启动器（python.exe，约 100KB，用于拉起无窗口主进程）
 tools/                自检脚本（前四个不开窗口）
+  layered_smoke.py      分层约束（ast 检查依赖方向）+ 各层行为 + 装配一致性
   service_smoke.py      共享缓存：命中 / 共享 / 预加载 / 迁移 / 降级
   election_smoke.py     双进程竞选
   lock_check.py         单实例锁互斥
-  ui_logic_smoke.py     界面层几何 / 菜单 / 文案 / 构件 / 配置一致性
-  ui_visual_check.py    真机截图（PrintWindow）+ 灰块 / 溢出 / 翻页箭头 / 抓错窗口检测
-viewer/               应用包
-  design.py            设计令牌投影（品牌色 → 色表 / 尺寸 / 字号，snapshot 可导出）
-  state.py             AppState 与状态栏文案格式化（纯函数）
-  ui/                  界面构件层（见「界面架构」）
-    kit.py               UI 词汇：文本 / 按钮 / 空态 / 提示
-    menu.py              菜单纯数据、快捷键表、分发校验
-    dialogs.py           确认框 / 诊断框
-    canvas.py            图片视口与手势装配
-    bars.py              菜单栏 / 三段式状态栏
-  app.py               主界面根组件（状态、事件、生命周期、装配）
-  image_manager.py     图片管理器（扫描/排序/解码缓存/变换/编码），也是降级路径
-  imaging.py           解码/变换/编码的纯函数层（本地与服务共用，保证结果逐字节一致）
-  shared_manager.py    共享缓存版管理器（状态本地、显示走服务、动图与故障本地解码）
-  daemon.py            主进程入口（python -m viewer.daemon；无窗口、不加载 Flutter）
-  shortcuts.py         快捷键表与按键匹配
-  file_assoc.py        Windows 文件关联（“打开方式”）注册工具
-  service/             共享服务子包
+  ui_visual_check.py    真机截图（PrintWindow）+ 灰块 / 溢出 / 翻页箭头 / 抓帧有效性
+imageviewer/
+  models/              ── 层 1：纯数据，所有层可依赖
+    geometry.py          视图几何（纯计算，零 UI 依赖，可脱离窗口复算）
+    media.py             Transform / ImageProbe / DisplayImage / ImageInfo
+    actions.py           Action 枚举 + 快捷键专属集 + 幻灯片间隔表
+    view_state.py        ViewerState / Notice / DialogRequest / RequestKind
+    diagnostics.py       BlobStats / DecodeStats / ServiceReport
+    formats.py           格式白名单（唯一事实源）
+  infra/               ── 层 2：技术实现，不含业务判断
+    imaging.py           解码 / 变换 / 编码纯函数（本地与服务共用，结果逐字节一致）
+    catalog.py           目录扫描与自然排序
+    display/local.py     本地显示：探测 / 出图 / 列表 / 预加载 / 导出 / 缓存统计
+    display/shared.py    共享显示：静态图走服务、动图本地、服务失败降级
+    shared/              常驻主进程：runtime / protocol / blobs / service / server / client / daemon
     paths.py             用户级目录（缓存/注册表/日志）
-    runtime.py           单实例锁、服务注册表、进程存活探测、计数器
-    protocol.py          线协议（长度前缀 JSON，令牌鉴权）
-    cache.py             BlobCache（磁盘 L2）/ DecodedCache（内存）/ DirIndex（目录索引）
-    core.py              ImageService：show / probe / list / preload / export / stats
-    server.py            loopback TCP 服务端（一连接一线程）
-    client.py            ServiceClient / DirectBackend / ServiceHost / ServiceLink（含接管）
-    spawn.py             拉起主进程（含随包运行时落地）与窗口子进程
+    trash.py             回收站
+    association.py       Windows 文件关联（`imageviewer-assoc`）
+    platform.py          平台查询（Windows / Ctrl 状态 / 可执行文件）
+    windows.py           窗口外观（DWM 暗色标题栏 / 居中 / 显示看门狗）
+    procs.py             拉起主进程与窗口子进程
+    concurrency.py       线程卸载（AsyncioRunner）
+  service/             ── 层 3：业务编排，只依赖端口协议
+    ports.py             DisplayProvider / FileTrash / AssociationStore / PlatformInfo / ProcessLauncher
+    gallery.py           画册用例：打开 / 扫描 / 翻页 / 变换 / 逐帧 / 删除
+    viewer.py            ViewerService：装配 + load_current + 多窗口 + 关联 + 诊断
+    diagnostics.py       服务报告解析
+  viewmodel/           ── 层 4：界面状态与交互意图，不认识控件
+    viewer_vm.py         ViewerViewModel：state / dispatch / 手势 / 播放循环 / 请求 / 导出 / 删除
+    formatting.py        状态栏与诊断文案（纯函数）
+    ports.py             BackgroundRunner / TaskScheduler / ViewerFacade
+  view/                ── 层 5：声明式渲染，只 import ui
+    app.py               根组件：装配 + 事件分发 + effect（订阅/尺寸/全屏/提示/弹窗/关窗）
+    design.py            设计令牌投影（品牌色 → 色表 / 尺寸 / 字号，snapshot 可导出）
+    kit.py                UI 词汇：文本 / 按钮 / 空态 / 提示
+    glass.py             玻璃翻页按钮（压在图片上的浮层，纯工厂，无隐藏签名）
+    viewport.py          图片视口四层渲染：背景 / 图像 / 框选 / 浮层
+    canvas.py            画布装配：视口 + 浮层 + 手势
+    bars.py              菜单栏 / 三段式状态栏
+    menu.py              菜单纯数据 + 快捷键表 + 分发校验
+    keymap.py            按键组合 → Action
+    dialogs.py           确认框 / 诊断框构件
+    scheduler.py         页面任务调度（TaskScheduler 实现）
 ```
 
 ## 说明
 
-- Flet 1.1（含 0.86 以来）的控件行为与规避方式：`theme_mode` 与窗口尺寸须在 `render()` 后设置；`page.width/height` 初始为陈旧值，以 resize 事件为准；Column 中 expand 子控件会吞掉后续兄弟空间、Stack 的 bottom 定位失效，故布局全部使用显式高度；组合键事件的 ctrl/shift 标志上报不可靠（实测恒为 False），修饰键状态需用 `KeyboardListener` 的 on_key_down/on_key_up 跟踪（+系统键查询兜底），点击图片区时重聚焦；`use_state` 更新做浅比较——纯视图状态（适应窗口/1:1/缩放）变化时镜像状态可能全部相同而**不触发重绘**，需在 sync_ui 末尾用递增计数 `set_render_tick(lambda t: t+1)` 强制渲染。
+- Flet 1.1（含 0.86 以来）的控件行为与规避方式：`theme_mode` 与窗口尺寸须在 `render()` 后设置；`page.width/height` 是**逻辑客户区**尺寸（初始可能是陈旧值，以 resize 事件为准）；Column 中 expand 子控件会吞掉后续兄弟空间、Stack 的 bottom 定位失效，故布局全部使用显式高度；组合键事件的 ctrl/shift 标志上报不可靠（实测恒为 False），修饰键状态需用 `KeyboardListener` 的 on_key_down/on_key_up 跟踪（+系统键查询兜底），点击图片区时重聚焦。
 - 冻结控件树：不要在事件回调里对已挂载控件调用 `update()`，状态变化一律经 `use_state` / `use_effect` 触发重渲染；需要「可查询」的界面信息（快捷键、色表、几何）放在纯数据层，而不是从控件树里反读。
-- `IconButton` 一律用 `icon=` 关键字构造：`@ft.control` 生成的 `__init__` 会把子类新增或重声明的字段排在父类字段之前，位置参数会被别的字段吃掉、`icon` 变 `None`，直到控件挂树才由渲染端抛 `IconButton must have either icon or a visible content specified`。本项目的 `viewer/ui/glass.py` 因此**不做 `IconButton` 子类**，改用纯工厂函数（没有隐藏的签名顺序）；`tools/ui_logic_smoke.py` 断言两枚翻页按钮都带图标。
+- `IconButton` 一律用 `icon=` 关键字构造：`@ft.control` 生成的 `__init__` 会把子类新增或重声明的字段排在父类字段之前，位置参数会被别的字段吃掉、`icon` 变 `None`，直到控件挂树才由渲染端抛 `IconButton must have either icon or a visible content specified`。本项目的 `view/glass.py` 因此**不做 `IconButton` 子类**，改用纯工厂函数（没有隐藏的签名顺序）；`tools/layered_smoke.py` 断言两枚翻页按钮都带图标。
 - **构造期通过 ≠ 渲染期通过**：条件渲染的控件（如只有多张图才出现的翻页箭头）必须用能触发该分支的真实场景冒烟，单图 / 空窗口会漏掉。
+- **开发模式下窗口不属于 python 进程**：`py main.py` 时窗口由 `flet.exe` 客户端进程创建（pid 与解释器不同），而打包版里 Python 内嵌在 Flutter 进程内。因此 `infra/windows.py` 的外观函数先按 pid 找窗口、找不到再按窗口标题回落 —— 只按 pid 找会让暗色标题栏与显示看门狗在开发期静默空转（表现：深色界面顶着一条白标题栏）。这条由 `layered_smoke.py` 的「窗口外观函数可接受窗口标题」+「main.py 把窗口标题交给窗口外观」守住。
 - `ui.MenuBar` 的下拉面板位置由 `MenuStyle.alignment` + `SubmenuButton.alignment_offset` 两个量共同决定：Flutter 的 `alignment` 只是**对齐点**（`Alignment.withinRect`），不会把面板内嵌到锚点矩形里，所以顶栏栏目必须撑满栏高并下沉 `MENU_DROP`（= 栏高）才会落在栏下方；嵌套子菜单用 `TOP_RIGHT` 从父项右侧展开。这两个数由 cs-ui 的 `scripts/_menu_bar_logic.py` 断言，改之前先看该文件的说明。

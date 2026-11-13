@@ -30,12 +30,17 @@ build = ["flet-cli>=1.0.0"]
 
 [project.scripts]
 imageviewer = "main:run"
-imageviewer-assoc = "viewer.file_assoc:main"   # Windows“打开方式”文件关联注册工具
-imageviewer-daemon = "viewer.daemon:main"      # 独立常驻的共享缓存服务（无窗口）
+imageviewer-assoc = "imageviewer.infra.association:main"   # Windows“打开方式”文件关联
+imageviewer-daemon = "imageviewer.infra.shared.daemon:main"  # 常驻共享缓存（无窗口）
 
 [tool.setuptools]
-packages = ["viewer", "viewer.service", "viewer.ui"]
+# 只有 main.py 是顶层模块；其余代码都在 imageviewer 包内分层组织。
 py-modules = ["main"]
+
+[tool.setuptools.packages.find]
+# 五层（models / infra / service / viewmodel / view）与它们的子包一网打尽，
+# 新增分层目录时不必再回来改这份列表。
+include = ["imageviewer*"]
 
 # ---------------------------------------------------------------------------
 # Flet 打包配置（flet build windows / macos / linux）
@@ -61,9 +66,9 @@ hide_window_on_start = true
 # 启动屏（窗口万一提前显示时的兜底）：深色底 + 深色转圈，
 # 不留任何白色帧。颜色键名见 flet 的 FletBootScreen。
 #
-# bgcolor 必须与 viewer/design.py 的 C_SURFACE 一致（当前 #141518，
+# bgcolor 必须与 imageviewer/view/design.py 的 C_SURFACE 一致（当前 #141518，
 # 由 MediaPalette.derive(BRAND_PRIMARY, "dark").surface 推导）。
-# 静态 TOML 没法 import 运行时色表，所以由 tools/ui_logic_smoke.py
+# 静态 TOML 没法 import 运行时色表，所以由 tools/layered_smoke.py
 # 的「启动屏底色 = 窗口底色」断言守住，换品牌色时同步改这里。
 # spinner 是刻意低对比的装饰色，不进语义色表。
 [tool.flet.boot_screen]

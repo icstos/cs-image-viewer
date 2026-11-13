@@ -39,6 +39,7 @@ HWND_TOPMOST = -1
 HWND_NOTOPMOST = -2
 SWP_NOMOVE = 0x0002
 SWP_NOSIZE = 0x0001
+WM_CLOSE = 0x0010
 
 user32 = ctypes.windll.user32
 gdi32 = ctypes.windll.gdi32
@@ -48,6 +49,8 @@ user32.GetWindowRect.argtypes = [wt.HWND, ctypes.POINTER(wt.RECT)]
 user32.GetClientRect.argtypes = [wt.HWND, ctypes.POINTER(wt.RECT)]
 user32.ClientToScreen.argtypes = [wt.HWND, ctypes.POINTER(wt.POINT)]
 user32.PrintWindow.argtypes = [wt.HWND, wt.HDC, wt.UINT]
+user32.IsWindow.argtypes = [wt.HWND]
+user32.PostMessageW.argtypes = [wt.HWND, wt.UINT, wt.WPARAM, wt.LPARAM]
 try:
     user32.SetProcessDPIAware()          # 让窗口矩形与屏幕像素同一坐标系
 except AttributeError:
@@ -75,7 +78,7 @@ class _BITMAPINFO(ctypes.Structure):
 
 
 def capture(hwnd: int):
-    """抓窗口**自身**内容，返回 PIL Image。
+    """抓窗口**自身**内容，返回 PIL Image（客户区像素）。
 
     为什么不用 ``ImageGrab``：它是屏幕抓取，窗口一旦不在前台（Windows 会拒绝
     非前台进程的 ``SetForegroundWindow``），拍到的就是盖在上面的 IDE / 浏览器。
@@ -83,22 +86,28 @@ def capture(hwnd: int):
     「箭头错位」。``PrintWindow`` + ``PW_RENDERFULLCONTENT`` 让 Flutter 自己把帧
     画进内存 DC，窗口被完全挡住也能拿到真实内容。
 
-    返回的是**客户区逻辑尺寸**（Flutter 按逻辑像素绘制），所以比屏幕截图小一圈；
-    比例类指标（灰块占比、箭头亮像素占比）不受影响。
+    **位图必须按整个窗口开**：``PrintWindow`` 会把标题栏之类的非客户区一起画进
+    DC，DC 原点对齐窗口左上角。早先按客户区开位图，等于把整窗画进一块偏小的
+    画布 —— 底部状态栏被整条裁掉（截图里图片一直铺到底，像布局挤爆了，其实只是
+    抓帧少了 64 物理像素）。这里改成「整窗抓 → 按客户区偏移裁」。
+
+    裁剪之后若内容仍只填左上角（某些驱动把帧按逻辑像素绘制），再按非纯黑包围盒
+    兜底裁一次 —— 直接量结果，不猜缩放比。
     """
     from PIL import Image
 
-    r = wt.RECT()
-    user32.GetClientRect(hwnd, ctypes.byref(r))
-    w, h = r.right - r.left, r.bottom - r.top
-    if w <= 0 or h <= 0:
-        raise RuntimeError(f"客户区尺寸异常：{w}x{h}")
+    win = wt.RECT()
+    cli = wt.RECT()
+    user32.GetWindowRect(hwnd, ctypes.byref(win))
+    user32.GetClientRect(hwnd, ctypes.byref(cli))
+    w, h = win.right - win.left, win.bottom - win.top
+    cw, ch = cli.right - cli.left, cli.bottom - cli.top
+    if w <= 0 or h <= 0 or cw <= 0 or ch <= 0:
+        raise RuntimeError(f"窗口尺寸异常：窗 {w}x{h} 客户区 {cw}x{ch}")
 
-    # 说明：PrintWindow 把帧画进我们给的 DC，但**按窗口的逻辑像素**绘制，而本进程
-    # 是 DPI 感知的，GetClientRect 给的是物理像素。两者不换算，内容就只填左上角、
-    # 右侧一片纯黑（箭头检测直接失效）。这里不去猜缩放比（GetDpiForWindow 实测
-    # 报 1.5，真实 DPR 是 1.75，猜错更糟），而是按物理尺寸抓、再裁到非纯黑的
-    # 内容包围盒 —— 直接量结果，不推理过程。
+    origin = wt.POINT(0, 0)
+    user32.ClientToScreen(hwnd, ctypes.byref(origin))
+    left, top = origin.x - win.left, origin.y - win.top
 
     hdc_win = user32.GetDC(hwnd)
     hdc = gdi32.CreateCompatibleDC(hdc_win)
@@ -127,22 +136,70 @@ def capture(hwnd: int):
         raise RuntimeError("PrintWindow 返回 0")
     img = Image.frombuffer("RGB", (w, h), buf, "raw", "BGRX", 0, 1)
 
-    # 裁到真实内容：画布色是 #0E1013（不是纯黑），未绘制区域才是 (0,0,0)。
-    # 整块纯黑时不裁，交给 canvas_ratio 判据报「抓错窗口」。
+    # 裁到客户区：去掉标题栏 / 边框，只留应用自己的画面。
+    img = img.crop((left, top, min(left + cw, w), min(top + ch, h)))
+
+    # 兜底：内容只填了一部分时，裁到真实内容包围盒。
     box = img.convert("L").point(lambda v: 255 if v > 2 else 0).getbbox()
-    if box and box[2] - box[0] > w * 0.3 and box[3] - box[1] > h * 0.3:
-        img = img.crop(box)
+    if box:
+        bw, bh = box[2] - box[0], box[3] - box[1]
+        if bw > img.width * 0.3 and bh > img.height * 0.3:
+            img = img.crop(box)
     return img
 
 
-def find_window(timeout: float = 30.0) -> int:
+def windows_titled(title: str) -> list[int]:
+    """所有标题精确匹配的顶层窗口句柄（按 z 序，最前最先）。"""
+    found: list[int] = []
+
+    @ctypes.WINFUNCTYPE(wt.BOOL, wt.HWND, wt.LPARAM)
+    def _collect(hwnd: int, _lparam: int) -> bool:
+        caption = ctypes.create_unicode_buffer(256)
+        user32.GetWindowTextW(hwnd, caption, 256)
+        if caption.value == title:
+            found.append(hwnd)
+        return True
+
+    user32.EnumWindows(_collect, 0)
+    return found
+
+
+def find_window(timeout: float = 30.0, exclude: set[int] | None = None) -> int:
+    """等一个**新的** ImageViewer 窗口；``exclude`` 里的旧窗口跳过。
+
+    开发模式下窗口属于 ``flet.exe`` 客户端进程，**不随 python 退出**（见
+    :func:`close_window`）。上一次运行留下的断线窗口标题仍是 ImageViewer，
+    直接取第一个就会抓到那张断线重连的白色引导页 —— 必须排除旧句柄。
+    """
+    skip = exclude or set()
     end = time.monotonic() + timeout
     while time.monotonic() < end:
-        hwnd = user32.FindWindowW(None, TITLE)
-        if hwnd:
-            return hwnd
+        for hwnd in windows_titled(TITLE):
+            if hwnd not in skip:
+                return hwnd
         time.sleep(0.3)
     return 0
+
+
+def close_window(hwnd: int, wait: float = 6.0) -> None:
+    """关掉**本脚本拉起**的窗口，必要时结束它的客户端进程。
+
+    先发 ``WM_CLOSE`` 走正常关闭；窗口还在就结束窗口所属进程。这一步不是洁癖：
+    残留的 ``flet.exe`` 会在下一次运行时冒充目标窗口，让验收随机失败。
+    """
+    user32.PostMessageW(hwnd, WM_CLOSE, 0, 0)
+    end = time.monotonic() + wait
+    while time.monotonic() < end:
+        if not user32.IsWindow(hwnd):
+            return
+        time.sleep(0.2)
+    pid = wt.DWORD()
+    user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+    if pid.value:
+        subprocess.run(
+            ["taskkill", "/F", "/PID", str(pid.value)],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
+        )
 
 
 def rect_of(hwnd: int) -> tuple[int, int, int, int]:
@@ -163,13 +220,56 @@ def _pixels(img):
     return list(fetch())
 
 
+def _panel_rgb() -> tuple[int, int, int]:
+    """菜单栏 / 状态栏的面板底色（唯一事实源是 design.py，这里只读一次）。"""
+    from imageviewer.view import design
+
+    raw = design.C_PANEL.lstrip("#")
+    return int(raw[0:2], 16), int(raw[2:4], 16), int(raw[4:6], 16)
+
+
+def _band_ratio(img, y0: float, y1: float) -> float:
+    """横带里「面板底色」占比 —— 顶栏 / 底栏是否真的画出来了。"""
+    w, h = img.size
+    band = img.crop((0, int(h * y0), w, int(h * y1)))
+    px = _pixels(band)
+    pr, pg, pb = _panel_rgb()
+    hit = sum(1 for r, g, b in px
+              if abs(r - pr) <= 6 and abs(g - pg) <= 6 and abs(b - pb) <= 6)
+    return hit / max(1, len(px))
+
+
+def _frame_is_app(img) -> bool:
+    """顶栏与底栏都到位，才算「应用已经画完一帧」。
+
+    只判顶栏不够：首帧可能只画了上半部分，底栏位置还是画布色 —— 那样截出来的图
+    看着正常，``status_dark`` 却会掉到 0.6 附近，让判据在阈值边缘晃。
+    """
+    return _band_ratio(img, 0.005, 0.030) > 0.75 and _band_ratio(img, 0.970, 1.000) > 0.75
+
+
+def capture_ready(hwnd: int, timeout: float = 20.0, delay: float = 0.4):
+    """抓帧直到拿到**本应用**的画面。
+
+    三种「看起来抓到了、其实没有」的帧都要等：
+
+    * 纯黑位图 —— Flutter 还没提交首帧，``PrintWindow`` 却返回成功；
+    * Flet 的 **「Working...」白色引导页** —— 窗口已经存在，Python 侧还没
+      ``page.render``（启动约 2.4 秒，固定 ``sleep(2.5)`` 是在赌）；
+    * 半张帧（图片还在解码）—— 由调用方在拿到首帧后再等一小会儿。
+
+    判据是顶栏的菜单面板底色：应用一旦渲染完成，这条 48px 面板必然在。
+    """
+    end = time.monotonic() + timeout
+    frame = capture(hwnd)
+    while time.monotonic() < end and not _frame_is_app(frame):
+        time.sleep(delay)
+        frame = capture(hwnd)
+    return frame
+
+
 def analyse(path: Path) -> dict[str, object]:
     from PIL import Image
-
-    from viewer import design
-
-    canvas = design.C_CANVAS.lstrip("#")
-    cr, cg, cb = (int(canvas[i:i + 2], 16) for i in (0, 2, 4))
 
     img = Image.open(path).convert("RGB")
     w, h = img.size
@@ -178,11 +278,6 @@ def analyse(path: Path) -> dict[str, object]:
     grey = sum(1 for r, g, b in pixels
                if abs(r - g) <= 6 and abs(g - b) <= 6 and 0xAC <= r <= 0xCC)
     overflow = sum(1 for r, g, b in pixels if r >= 240 and g >= 225 and b <= 80)
-    # 抓错窗口的定量信号：ImageViewer 的图片区底色必然占相当面积，
-    # 抓到 IDE / 浏览器时这一项会掉到 0。
-    canvas_ratio = sum(1 for r, g, b in pixels
-                       if abs(r - cr) <= 6 and abs(g - cg) <= 6 and abs(b - cb) <= 6
-                       ) / max(1, len(pixels))
 
     def bright_ratio(x0: float, x1: float) -> float:
         """箭头所在竖带里「亮且低饱和」像素占比：白色图标的定量信号。"""
@@ -196,7 +291,10 @@ def analyse(path: Path) -> dict[str, object]:
         "grey_ratio": round(grey / max(1, len(pixels)), 4),
         "overflow_px": overflow,
         "unique_colors": len(set(pixels)),
-        "canvas_ratio": round(canvas_ratio, 4),
+        # 顶栏 / 底栏的面板底色占比 = 「抓到的确实是本应用、且没被裁掉」，与图片内容无关。
+        # 早先用「画布色占比」判断，但适应窗口后图片几乎铺满画布，正常截图反而被判成抓错窗口。
+        "menu_dark": round(_band_ratio(img, 0.005, 0.030), 4),
+        "status_dark": round(_band_ratio(img, 0.970, 1.000), 4),
         "left_bright": round(bright_ratio(0.02, 0.13), 4),
         "right_bright": round(bright_ratio(0.87, 0.98), 4),
     }
@@ -214,12 +312,14 @@ def main() -> int:
     env = os.environ.copy()
     env.pop("CSIV_SMOKE", None)           # 这次要窗口一直开着
 
+    stale = set(windows_titled(TITLE))    # 上一次运行可能留下的断线窗口
     proc = subprocess.Popen(
         cmd, cwd=str(ROOT), env=env,
         stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT,
     )
+    hwnd = 0
     try:
-        hwnd = find_window()
+        hwnd = find_window(exclude=stale)
         if not hwnd:
             print("FAIL 没找到 ImageViewer 窗口")
             return 1
@@ -227,11 +327,12 @@ def main() -> int:
         user32.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE)
         user32.ShowWindow(hwnd, 9)        # SW_RESTORE
         user32.SetForegroundWindow(hwnd)
-        time.sleep(2.5)                   # 等首帧、图片解码与预加载稳定
 
         shot = OUT / ("multi.png" if args.folder else "empty.png")
         try:
-            capture(hwnd).save(shot)
+            capture_ready(hwnd).save(shot)          # 等第一帧本应用的画面
+            time.sleep(0.8)                        # 再等图片解码 / 箭头稳定
+            capture_ready(hwnd, timeout=6.0).save(shot)
         except Exception as exc:           # 少数驱动下 PrintWindow 不可用
             print(f"  ! PrintWindow 失败（{exc}），回退屏幕抓取")
             from PIL import ImageGrab
@@ -246,26 +347,29 @@ def main() -> int:
             report["grey_ratio"] < 0.55        # 没有被 ErrorWidget 灰块占满
             and report["overflow_px"] == 0     # 没有 Flutter 溢出斜纹
             and report["unique_colors"] > 20   # 不是纯色/全黑空帧
-            and report["canvas_ratio"] > 0.05  # 抓到的确实是本应用（图片区底色在）
+            and report["menu_dark"] > 0.60     # 菜单栏在（顶栏面板底色）
+            and report["status_dark"] > 0.60   # 状态栏在（底栏面板底色，没被裁掉）
         )
-        if report["canvas_ratio"] <= 0.05:
-            print("  ! 画布色几乎不存在：多半抓到了盖在上面的别的窗口，重跑一次")
+        if report["menu_dark"] <= 0.60 or report["status_dark"] <= 0.60:
+            print("  ! 顶栏/底栏面板底色缺失：多半抓到了盖在上面的别的窗口，重跑一次")
         if args.folder:
             # 两枚玻璃箭头各应贡献一小片亮图标像素；单图时这两项接近 0。
             ok = ok and report["left_bright"] > 0.0005 and report["right_bright"] > 0.0005
         print("结果：" + ("通过" if ok else "失败"))
         return 0 if ok else 1
     finally:
+        user32.SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0,
+                            SWP_NOMOVE | SWP_NOSIZE)
+        if hwnd:
+            close_window(hwnd)            # 窗口属于 flet 客户端进程，必须显式关掉
         try:
-            user32.SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0,
-                                SWP_NOMOVE | SWP_NOSIZE)
-        except NameError:                 # 没走到 find_window 时 hwnd 不存在
-            pass
-        proc.terminate()
-        try:
-            proc.wait(timeout=5)
+            proc.wait(timeout=5)          # 窗口关闭后 python 自己会退，给它 5 秒
         except subprocess.TimeoutExpired:
-            proc.kill()
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
 
 
 if __name__ == "__main__":
