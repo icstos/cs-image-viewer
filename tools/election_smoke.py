@@ -16,14 +16,14 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 CODE = r"""
 import os, sys, time
-sys.path.insert(0, "__ROOT__")
+sys.path.insert(0, __ROOT__)
 from viewer.service.client import default_link
 link = default_link()
 ok = link.acquire(budget=3.0)
 status = link.status()
 print(f"[{os.getpid()}] acquire={ok} role={status.get('role')} host={status.get('is_host')}")
 time.sleep(1.2)                      # 给对手进程留出抢锁/连上的时间
-m = link.call("show", path="__IMAGE__")
+m = link.call("show", path=__IMAGE__)
 print(f"[{os.getpid()}] show hit={m['hit']} {m['dw']}x{m['dh']}")
 time.sleep(0.8)
 print(f"[{os.getpid()}] final={link.status().get('role')} recoveries={link.recoveries}")
@@ -35,7 +35,9 @@ def main() -> int:
     if not os.path.isfile(image):
         print("请传入一个已存在的图片路径")
         return 2
-    code = CODE.replace("__ROOT__", ROOT).replace("__IMAGE__", image.replace("\\", "\\\\"))
+    # 用 repr 生成合法的字符串字面量：Windows 路径里的反斜杠不会被当成转义序列，
+    # 子进程也就不会抛 SyntaxWarning（干净的输出才便于 Agent 复算）。
+    code = CODE.replace("__ROOT__", repr(ROOT)).replace("__IMAGE__", repr(image))
 
     env = os.environ.copy()
     env.setdefault("IMAGEVIEWER_HOME", os.path.join(ROOT, ".tmp-election"))

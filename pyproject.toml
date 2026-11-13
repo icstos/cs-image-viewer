@@ -9,7 +9,11 @@ description = "基于 Flet 的桌面端轻量看图软件（IrfanView 风格交�
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "flet>=1.0.0",
+    # 界面层只 import `ui`（基于 flet 的本地组件库 cs-ui）；flet 由其间接依赖带入。
+    # 开发期：py -3.12 -m pip install -e ../cs-ui（editable，装完版本为 0.2.0）
+    # 打包期：索引上只发布到 0.1.1，>=0.2.0 需由本地 wheel + PIP_FIND_LINKS 提供，
+    #         具体步骤见 README「打包」一节，否则 flet build 会解析依赖失败。
+    "cs-ui>=0.2.0",
     "pillow>=10.4",
     "send2trash>=1.8.3",
 ]
@@ -30,7 +34,7 @@ imageviewer-assoc = "viewer.file_assoc:main"   # Windows“打开方式”文件
 imageviewer-daemon = "viewer.daemon:main"      # 独立常驻的共享缓存服务（无窗口）
 
 [tool.setuptools]
-packages = ["viewer", "viewer.service"]
+packages = ["viewer", "viewer.service", "viewer.ui"]
 py-modules = ["main"]
 
 # ---------------------------------------------------------------------------
@@ -56,12 +60,18 @@ hide_window_on_start = true
 
 # 启动屏（窗口万一提前显示时的兜底）：深色底 + 深色转圈，
 # 不留任何白色帧。颜色键名见 flet 的 FletBootScreen。
+#
+# bgcolor 必须与 viewer/design.py 的 C_SURFACE 一致（当前 #141518，
+# 由 MediaPalette.derive(BRAND_PRIMARY, "dark").surface 推导）。
+# 静态 TOML 没法 import 运行时色表，所以由 tools/ui_logic_smoke.py
+# 的「启动屏底色 = 窗口底色」断言守住，换品牌色时同步改这里。
+# spinner 是刻意低对比的装饰色，不进语义色表。
 [tool.flet.boot_screen]
 name = "flet"
 
 [tool.flet.boot_screen.flet]
-bgcolor_light = "#141414"
-bgcolor_dark = "#141414"
+bgcolor_light = "#141518"
+bgcolor_dark = "#141518"
 spinner_color_light = "#3d3d3d"
 spinner_color_dark = "#3d3d3d"
 theme_mode = "dark"

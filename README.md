@@ -1,12 +1,19 @@
 # ImageViewer
 
-基于 Python Flet 的桌面端轻量看图软件，对标 IrfanView 基础交互：流畅、键盘友好、Windows 优先。
+基于 Python Flet 1.1 + 本地组件库 **cs-ui**（Python 包名 `ui`）的桌面端轻量看图软件，
+对标 IrfanView 基础交互：流畅、键盘友好、Windows 优先。
+
+界面层只 `import ui`，不再直接依赖 `flet`；通用组件沉淀在 cs-ui，详见「界面架构」。
 
 ## 运行
 
 依赖与打包配置统一在 `pyproject.toml`（已不再使用 `requirements.txt`）。
 
+界面层依赖本地组件库 **cs-ui**（导入名 `ui`，版本 0.2.0）。首次开发前先装它，
+再装本项目；`flet` 会随依赖带入。打包时索引上还没有 0.2.0，需另备本地 wheel，见「打包」。
+
 ```bash
+py -3.12 -m pip install -e ../cs-ui       # 或指向你本机的 cs-ui 目录
 py -3.12 -m pip install -e .              # 基础依赖
 py -3.12 -m pip install -e ".[formats]"   # 基础 + 全部特殊格式（HEIC/RAW/SVG/APNG）
 py -3.12 main.py                # 启动空窗口
@@ -27,6 +34,31 @@ imageviewer-assoc               # “打开方式”文件关联注册工具（�
 | `build` | flet-cli | 仅打包用 |
 
 ## 打包
+
+### 先准备 cs-ui 0.2.0（必须）
+
+`[project.dependencies]` 要求 `cs-ui>=0.2.0`，但包索引目前只发布到 `0.1.1`
+（开发机上是 editable 安装的 0.2.0）。**直接 `flet build` 会因解析不到版本而失败**。
+打包前先构建本地 wheel，并通过 `PIP_FIND_LINKS` 交给 flet 调用的 pip：
+
+```bash
+py -3.12 -m pip wheel --no-deps -w ../cs-ui/dist ../cs-ui   # 产出 cs_ui-0.2.0-py3-none-any.whl
+export PIP_FIND_LINKS=/d/CSTOS/projects/cs-ui/dist            # Git Bash；PowerShell 用 $env:PIP_FIND_LINKS="D:\CSTOS\projects\cs-ui\dist"
+flet build windows --python-version 3.12                     # 产物在 build/windows/
+```
+
+确认解析到的是本地版本：
+
+```bash
+PIP_FIND_LINKS=/d/CSTOS/projects/cs-ui/dist py -3.12 -m pip install --dry-run --ignore-installed --no-deps "cs-ui>=0.2.0"
+# Would install cs-ui-0.2.0
+```
+
+wheel 必须含 `ui/core/geometry.py`、`ui/display/image_viewport.py`、
+`ui/navigation/menu_bar.py` 等本次新增组件；若 cs-ui 已发布 0.2.0 到可访问索引，
+这一节可整段跳过。
+
+### 常规打包
 
 ```bash
 py -3.12 -m pip install ".[build]"
@@ -54,6 +86,10 @@ flet build windows --python-version 3.12      # 产物在 build/windows/
 | `[tool.flet.app] hide_window_on_start = true` | 客户端窗口创建后**不显示**，等 Python 布置好界面再亮出来 |
 | `[tool.flet.boot_screen.flet]` | 启动屏底色/转圈全设成深色，任何提前显示的帧都不会是白色 |
 | `[tool.flet.compile] app = true` | 打包时把 `main.py` / `viewer/*.py` 预编译成 `.pyc`，内嵌解释器启动更快 |
+
+启动屏 `bgcolor` 必须与 `viewer/design.py` 的 `C_SURFACE` 一致（当前 `#141518`，
+由 `MediaPalette.derive()` 推导）。静态 TOML 无法 import 运行时色表，
+由 `tools/ui_logic_smoke.py` 的「启动屏底色 = 窗口底色」断言守住，换品牌色时同步改。
 
 `main.py` 的启动顺序是「先布置、后显示」：构建 UI 树 → 一次性下发窗口尺寸/最小尺寸/
 主题/底色（窗口仍隐藏）→ 居中 → 把标题栏切成深色 → 最后显示。
@@ -120,7 +156,21 @@ py -3.12 -m viewer.daemon --detach  # 分离到后台
 py -3.12 tools/service_smoke.py         # 命中/共享/预加载/迁移/降级，39 项断言
 py -3.12 tools/election_smoke.py <图片>  # 两进程同时启动：恰好一个主进程，另一方命中
 py -3.12 tools/lock_check.py            # 单实例锁互斥（4 进程抢同一把锁）
+py -3.12 tools/ui_logic_smoke.py        # 界面层几何/菜单/文案/构件/配置一致性，74 项断言
 ```
+
+带窗口的启动冒烟：`CSIV_SMOKE=1 CSIV_TIMING=1 py -3.12 main.py <图片>`，
+数秒后自动退出，输出各阶段耗时、窗口尺寸与服务角色。
+
+真机截图 + 定量验收（会短暂开窗口并自动关闭，PNG 存 `output/ui_visual/`）：
+
+```bash
+py -3.12 tools/ui_visual_check.py <图片目录>   # 多图：灰块 / 溢出 / 两枚翻页箭头
+py -3.12 tools/ui_visual_check.py               # 空窗口对照
+```
+
+它数 ErrorWidget 灰块占比、Flutter 溢出黄纹像素、左右箭头带的亮图标像素，
+把「构造期通过 ≠ 渲染期通过」这类只在真机暴露的问题变成可断言的数字。
 
 ## 文件关联（右键“打开方式” / 设为默认看图程序）
 
@@ -220,6 +270,50 @@ Python 才会真正启动。`main.py` 按 `env → 请求文件 → argv` 顺序
 - 底部状态栏：文件名 / 分辨率+大小 / 页码+实时缩放百分比；全屏隐藏全部 UI
 - 界面统一使用随包分发的本地字体 `assets/fonts/AlibabaPuHuiTi-3-55-Regular.otf`（阿里普惠体）：不依赖目标机器装了什么中文字体，菜单、状态栏、弹窗、提示的文字风格一致；字体路径相对 `assets/` 声明，开发运行与 `flet build` 产物同一套写法
 
+## 界面架构（`ui` 门面 / 可复算契约）
+
+界面层**只 `import ui`**，源码里不出现 `import flet` / `from flet ...`
+（由 `tools/ui_logic_smoke.py` 断言守住）。`ui` 是 cs-ui 的懒加载门面：
+先解析 `ui` 子模块与组件注册表，未命中才回退到 `flet` 的公开名。
+因此「用 `ui.Text`」和「用 `ui.ImageViewport`」是同一套写法，新增组件不必改调用方。
+
+分层是单向的，越往下越纯、越容易测：
+
+```
+viewer/design.py     设计令牌唯一事实源：品牌色 → MediaPalette → C_* / 尺寸 / snapshot()
+viewer/state.py      AppState 与状态栏文案格式化（纯函数，无控件）
+viewer/ui/kit.py     UI 词汇：文本 / 按钮 / 空态 / 提示
+viewer/ui/menu.py    菜单纯数据（MenuAction/MenuSection）+ 快捷键表 + 分发校验
+viewer/ui/dialogs.py 确认框 / 诊断框构件
+viewer/ui/canvas.py  图片视口与手势装配
+viewer/ui/bars.py    菜单栏 / 三段式状态栏
+viewer/app.py        状态、事件、生命周期、装配（@ui.component）
+main.py              窗口启动、主题下发、共享服务 bootstrap
+```
+
+为本项目抽象、已沉淀到 cs-ui 的公共能力（其它项目可直接用）：
+
+| cs-ui 能力 | 用途 |
+| --- | --- |
+| `ui.core.geometry` | 纯几何层：`ViewTransform` / `ViewSize` / `ViewPoint` / `ViewRect`，缩放倍率、平移夹取、锚点缩放、框选放大、滚轮意图、导航按钮定位；零 Flet 依赖、不可变 dataclass |
+| `ui.GlassIconButton` / `glass_nav_pair` | 压在任意图片上的半透明圆形翻页按钮（固定深色玻璃，不随主题变化） |
+| `ui.ImageViewport` | 背景 / 图像 / 框选 / 悬浮导航四层图片视口，保留 `gapless_playback` |
+| `ui.MenuBar` / `MenuAction` / `MenuSection` | 数据驱动的桌面下拉菜单栏，快捷键用 `ui.Kbd` 键帽呈现；`shortcut_map()` / `validate_sections()` 可查询可断言 |
+| `ui.StatusBar(center=...)` | 三段式状态栏（在原两段式上扩展，旧用法向后兼容） |
+
+给测试与 Agent 的复算入口（都可离线跑、可断言）：
+
+```bash
+py -3.12 tools/ui_logic_smoke.py
+py -3.12 -c "from viewer import design; print(design.snapshot())"        # 色表 / 布局 / 字号快照
+py -3.12 -c "from viewer.ui import menu; print(menu.shortcut_table())"   # 快捷键表
+```
+
+`ui-mcp` 已收录上述组件与几何函数，支持中文别名检索。在 cs-ui 侧新增或改动组件后，
+需同步 `ui/_registry.py`（`python scripts/gen_ui_registry.py` 生成）、
+`ui/core/catalog.py`、`ui_mcp/aliases.py` 与相应子包 `__init__.py`，
+再执行 `python -m ui_mcp build` 与 `python scripts/check_all.py`。
+
 ## 结构
 
 ```
@@ -227,9 +321,22 @@ pyproject.toml        依赖与打包配置（PEP 621 + [tool.flet]）
 main.py               入口（角色分发：窗口 / 主进程；启动路径：env / 请求文件 / argv）
 assets/fonts/         随包字体（AlibabaPuHuiTi-3-55-Regular.otf，全局界面字体）
 assets/runtime/       随包解释器启动器（python.exe，约 100KB，用于拉起无窗口主进程）
-tools/                无界面自检脚本（服务冒烟 / 双进程竞选 / 文件锁）
+tools/                自检脚本（前四个不开窗口）
+  service_smoke.py      共享缓存：命中 / 共享 / 预加载 / 迁移 / 降级
+  election_smoke.py     双进程竞选
+  lock_check.py         单实例锁互斥
+  ui_logic_smoke.py     界面层几何 / 菜单 / 文案 / 构件 / 配置一致性
+  ui_visual_check.py    真机截图 + 灰块 / 溢出 / 翻页箭头定量检测
 viewer/               应用包
-  app.py               主界面组件（菜单栏、图片区、状态栏、事件分发）
+  design.py            设计令牌投影（品牌色 → 色表 / 尺寸 / 字号，snapshot 可导出）
+  state.py             AppState 与状态栏文案格式化（纯函数）
+  ui/                  界面构件层（见「界面架构」）
+    kit.py               UI 词汇：文本 / 按钮 / 空态 / 提示
+    menu.py              菜单纯数据、快捷键表、分发校验
+    dialogs.py           确认框 / 诊断框
+    canvas.py            图片视口与手势装配
+    bars.py              菜单栏 / 三段式状态栏
+  app.py               主界面根组件（状态、事件、生命周期、装配）
   image_manager.py     图片管理器（扫描/排序/解码缓存/变换/编码），也是降级路径
   imaging.py           解码/变换/编码的纯函数层（本地与服务共用，保证结果逐字节一致）
   shared_manager.py    共享缓存版管理器（状态本地、显示走服务、动图与故障本地解码）
@@ -245,9 +352,12 @@ viewer/               应用包
     server.py            loopback TCP 服务端（一连接一线程）
     client.py            ServiceClient / DirectBackend / ServiceHost / ServiceLink（含接管）
     spawn.py             拉起主进程（含随包运行时落地）与窗口子进程
-    spawn.py             拉起新窗口与守护进程
 ```
 
 ## 说明
 
-- Flet 0.86.x 已知怪癖（已在代码中规避）：`theme_mode` 与窗口尺寸须在 `render()` 后设置；`page.width/height` 初始为陈旧值，以 resize 事件为准；Column 中 expand 子控件会吞掉后续兄弟空间、Stack 的 bottom 定位失效，故布局全部使用显式高度；组合键事件的 ctrl/shift 标志上报不可靠（实测恒为 False），修饰键状态需用 `KeyboardListener` 的 on_key_down/on_key_up 跟踪（+系统键查询兜底），点击图片区时重聚焦；`use_state` 更新做浅比较——纯视图状态（适应窗口/1:1/缩放）变化时镜像状态可能全部相同而**不触发重绘**，需在 sync_ui 末尾用递增计数 `set_render_tick(lambda t: t+1)` 强制渲染。
+- Flet 1.1（含 0.86 以来）的控件行为与规避方式：`theme_mode` 与窗口尺寸须在 `render()` 后设置；`page.width/height` 初始为陈旧值，以 resize 事件为准；Column 中 expand 子控件会吞掉后续兄弟空间、Stack 的 bottom 定位失效，故布局全部使用显式高度；组合键事件的 ctrl/shift 标志上报不可靠（实测恒为 False），修饰键状态需用 `KeyboardListener` 的 on_key_down/on_key_up 跟踪（+系统键查询兜底），点击图片区时重聚焦；`use_state` 更新做浅比较——纯视图状态（适应窗口/1:1/缩放）变化时镜像状态可能全部相同而**不触发重绘**，需在 sync_ui 末尾用递增计数 `set_render_tick(lambda t: t+1)` 强制渲染。
+- 冻结控件树：不要在事件回调里对已挂载控件调用 `update()`，状态变化一律经 `use_state` / `use_effect` 触发重渲染；需要「可查询」的界面信息（快捷键、色表、几何）放在纯数据层，而不是从控件树里反读。
+- 继承 `IconButton` 的组件（如 `ui.GlassIconButton`）**必须用 `icon=` 关键字构造**：`@ft.control` 生成的 `__init__` 会把子类重声明的 `tooltip` / `disabled` 排在父类字段之前，位置参数会被 `tooltip` 吃掉、`icon` 变 `None`，直到控件挂树才由渲染端抛 `IconButton must have either icon or a visible content specified`。cs-ui 已在 `init()` 加构造期防御，并由 `scripts/_glass_button_logic.py` 与本项目 `tools/ui_logic_smoke.py` 双重断言守住。
+- **构造期通过 ≠ 渲染期通过**：条件渲染的控件（如只有多张图才出现的翻页箭头）必须用能触发该分支的真实场景冒烟，单图 / 空窗口会漏掉。
+- `ui.MenuBar` 的下拉面板位置由 `MenuStyle.alignment` + `SubmenuButton.alignment_offset` 两个量共同决定：Flutter 的 `alignment` 只是**对齐点**（`Alignment.withinRect`），不会把面板内嵌到锚点矩形里，所以顶栏栏目必须撑满栏高并下沉 `MENU_DROP`（= 栏高）才会落在栏下方；嵌套子菜单用 `TOP_RIGHT` 从父项右侧展开。这两个数由 cs-ui 的 `scripts/_menu_bar_logic.py` 断言，改之前先看该文件的说明。

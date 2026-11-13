@@ -51,9 +51,10 @@ import sys
 import time
 from pathlib import Path
 
-import flet as ft
+import ui
 
 from viewer import app as app_module
+from viewer import design
 from viewer.app import ImageViewerApp
 from viewer.service import spawn as service_spawn
 from viewer.service.client import ServiceLink, default_link, shutdown_default_link
@@ -67,14 +68,14 @@ REQUEST_MAX_AGE = 15.0  # 秒：超过视为上次残留，直接丢弃
 # 进程角色（与 viewer/service/spawn.py 保持一致）
 ROLE_ENV = "IMAGEVIEWER_ROLE"
 
-# 窗口与配色：与 viewer/app.py 中的 BG_COLOR 保持一致，
-# 这样即使是窗口底色（漏画区域）也不会闪出白色。
+# 窗口底色取 design 色表的 surface：与 page.bgcolor、ui 主题下发的画布色同族，
+# 隐藏窗口期间的漏画帧也不会闪出白色。
 WINDOW_WIDTH = 1100
 WINDOW_HEIGHT = 760
 WINDOW_MIN_WIDTH = 640
 WINDOW_MIN_HEIGHT = 480
 WINDOW_TITLE = "ImageViewer"
-BG_COLOR = "#141414"
+BG_COLOR = design.C_SURFACE
 
 # 全局字体：阿里普惠体，随应用一起打包，不依赖目标机器装了什么中文字体。
 # 路径相对 assets 目录（flet build 会把 assets/ 整体拷进安装包），
@@ -261,18 +262,25 @@ def _is_visible(hwnd: int) -> bool:
 # 页面入口
 # ---------------------------------------------------------------------------
 
-def _configure_theme(page: ft.Page) -> None:
-    """主题与字体（深色 + 本地普惠体）。放在 render 之前，首帧即最终排版。"""
-    page.theme_mode = ft.ThemeMode.DARK
-    # 字体挂在 Theme 上：菜单、状态栏、弹窗、提示等所有控件统一继承，
-    # 不需要逐个 ft.Text 指定 font_family；Material 图标用的是独立图标字体，不受影响。
-    page.theme = ft.Theme(font_family=FONT_FAMILY)
+def _configure_theme(page: ui.Page) -> None:
+    """主题与字体：交给 ui 的主题运行时一次下发。
+
+    ``apply_theme`` 会同时写 ``page.theme`` / ``page.dark_theme`` 两棵由品牌色算出的
+    完整色板，并设置画布底色 —— cs-ui 组件里的 ``ON_SURFACE_VARIANT`` 这类角色名
+    由 Flutter 按这棵树解析，所以深色界面里文字不会变成浅色主题下的深灰。
+    字体挂在 Theme 上，菜单 / 状态栏 / 弹窗 / 提示统一继承。
+    """
+    state = ui.theme_state()
+    state.set_mode(design.MODE)
+    state.set_primary(design.BRAND_PRIMARY)
+    state.font_family = FONT_FAMILY
+    ui.apply_theme(page, state)
 
 
-def _configure_window(page: ft.Page) -> None:
+def _configure_window(page: ui.Page) -> None:
     """窗口属性（尺寸/最小尺寸/底色）集中下发，此时窗口仍是隐藏的。"""
-    # render 有可能把主题重置回默认，这里再钉一次深色模式（字体仍由 page.theme 决定）
-    page.theme_mode = ft.ThemeMode.DARK
+    # render 有可能把主题重置回默认，这里再钉一次深色模式。
+    page.theme_mode = ui.ThemeMode.DARK
     window = page.window
     window.min_width = WINDOW_MIN_WIDTH
     window.min_height = WINDOW_MIN_HEIGHT
@@ -282,7 +290,7 @@ def _configure_window(page: ft.Page) -> None:
     window.bgcolor = BG_COLOR
 
 
-async def _reveal_window(page: ft.Page) -> None:
+async def _reveal_window(page: ui.Page) -> None:
     """居中 + 深色标题栏 + 显示：三步都在窗口不可见时完成，用户只看到最终结果。"""
     _watchdog_start()
     try:
@@ -298,7 +306,7 @@ async def _reveal_window(page: ft.Page) -> None:
     _mark("window visible")
 
 
-async def main(page: ft.Page) -> None:
+async def main(page: ui.Page) -> None:
     """Flet 页面入口：任何异常都先落盘再抛出（打包版没有控制台）。"""
     try:
         await _main(page)
@@ -307,7 +315,7 @@ async def main(page: ft.Page) -> None:
         raise
 
 
-async def _main(page: ft.Page) -> None:
+async def _main(page: ui.Page) -> None:
     page.title = WINDOW_TITLE
     page.bgcolor = BG_COLOR
     page.padding = 0
@@ -384,7 +392,7 @@ def _bootstrap_service(web: bool) -> ServiceLink | None:
     return link
 
 
-async def _smoke_run(page: ft.Page, start_source: str, start_path: str | None) -> None:
+async def _smoke_run(page: ui.Page, start_source: str, start_path: str | None) -> None:
     """CSIV_SMOKE=1 时的自检输出与自动退出（正常启动不执行）。"""
     print(f"[smoke] argv={sys.argv[1:]} start={start_source} start_path={start_path}", flush=True)
     print(f"[smoke] role={os.environ.get(ROLE_ENV, 'window')}", flush=True)
@@ -423,15 +431,15 @@ def run() -> None:
         raise SystemExit(daemon_main([]))
     if os.environ.get("CSIV_WEB"):
         # 开发验证模式：以 Web 方式运行（同一套代码，便于截图/交互调试）
-        ft.run(main, view=ft.AppView.WEB_BROWSER, port=8550)
+        ui.run(main, view=ui.AppView.WEB_BROWSER, port=8550)
         return
     # FLET_APP_HIDDEN：桌面客户端先建窗口但不显示，等 Python 把 UI 布置好再亮出来。
-    # 打包版没有这个参数（Python 嵌在 Flutter 进程内），由 pyproject 的
+    # 打包版没有这个参数（Python 嵌在 Flutter 进程内），由 pyproject.toml 的
     # [tool.flet.app] hide_window_on_start 达成同样效果。
     try:
-        ft.run(main, view=ft.AppView.FLET_APP_HIDDEN)
+        ui.run(main, view=ui.AppView.FLET_APP_HIDDEN)
     except BaseException:
-        log_crash("ft.run")
+        log_crash("ui.run")
         raise
 
 

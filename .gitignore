@@ -1,5 +1,5 @@
 .workbuddy
-
+output/
 __pycache__/
 *.pyc
 .cowork-temp/

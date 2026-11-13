@@ -1,655 +1,391 @@
-"""ImageViewer - 主界面（声明式 Flet 组件）。
+"""ImageViewer 主界面 —— 声明式组件，基于 :mod:`ui` 门面。
 
-结构：
-    ImageViewerApp  根组件：顶部菜单栏 + 图片浏览区 + 底部状态栏
-    AppState        全部可变状态，保存在 use_ref 中，事件回调直接读写
-    sync_ui()       状态 -> UI 镜像（use_state）的统一同步入口，驱动组件重绘
+不再直接依赖底层框架包：控件、组件、设计令牌、几何计算全部经 ``ui`` 取得，
+配色由 :mod:`viewer.design` 投影，界面构件在 :mod:`viewer.ui` 里分层装配。
 
-进程模型：本模块只负责**一个窗口**的界面与交互。图片从哪来取决于
-`AppState.manager` 的工厂（`set_manager_factory`）——
-`RemoteImageManager`（共享缓存，多个窗口共用解码结果）或
-`ImageManager`（纯本地解码，Web 调试与降级时使用）。
-界面代码对两者一视同仁，因为它俩接口完全一致。
+组件内部只做四件事：
+
+============ ==========================================================
+状态         ``AppState``（``use_memo`` 钉住）+ 一组 ``use_state`` 镜像
+同步         ``sync_ui()`` 是「状态 → 界面」的唯一入口
+意图         菜单 / 快捷键 / 手势统一汇入一张 ``ACTIONS`` 表
+生命周期     ``use_effect`` 管动图、幻灯片、启动打开与页面事件
+============ ==========================================================
+
+几何（倍率、平移、锚点缩放、框选放大、滚轮分派）在 ``ui.core.geometry`` 里是纯
+函数，可脱离窗口复算；渲染在 ``ui.ImageViewport`` 里，二者共用同一套坐标约定。
+
+进程模型：本模块只负责**一个窗口**。图片来自 ``set_manager_factory`` 注入的
+`RemoteImageManager`（共享缓存）或 `ImageManager`（本地解码），接口完全一致。
 """
+
 from __future__ import annotations
 
 import asyncio
 import ctypes
 import os
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
-import flet as ft
+import ui
 
-from .image_manager import IMAGE_EXTS, ImageManager, format_size
+from . import design as D
+from .image_manager import IMAGE_EXTS
 from .shortcuts import match
+from .state import (
+    AppState,
+    StatusSnapshot,
+    format_service_info,
+    format_status,
+    set_manager_factory,
+)
+from .ui.bars import build_menu_bar, build_status_bar
+from .ui.canvas import CanvasHandlers, build_canvas
+from .ui.dialogs import confirm_dialog, info_dialog
+from .ui.kit import empty_stage, toast
+from .ui.menu import MenuContext, build_sections
 
-START_PATH: str | None = None   # 启动时自动打开的文件/文件夹（由 main.py 注入）
-INITIAL_SIZE: tuple[float, float] | None = None   # 初始客户端尺寸（由 main.py 在 render 前捕获）
+__all__ = [
+    "ACTIONS",
+    "INITIAL_SIZE",
+    "START_PATH",
+    "ImageViewerApp",
+    "set_initial_size",
+    "set_manager_factory",
+]
 
-# 图片管理器的工厂：main.py 在 render 之前注入（共享缓存版 / 本地版）。
-# 用「工厂」而不是实例：每个窗口进程各有自己的 AppState 与缓存句柄。
-_manager_factory: Callable[[], ImageManager] = ImageManager
-
-
-def set_manager_factory(factory: Callable[[], ImageManager]) -> None:
-    """注入管理器工厂（由 main.py 调用；不注入时退回纯本地解码）。"""
-    global _manager_factory
-    _manager_factory = factory
+#: 启动时自动打开的文件/文件夹（由 main.py 注入）。
+START_PATH: str | None = None
+#: 初始客户端尺寸（main.py 在 render 前由 resize 事件捕获；0.86.x 的 page.height 陈旧）。
+INITIAL_SIZE: tuple[float, float] | None = None
 
 
 def set_initial_size(width: float, height: float) -> None:
-    """main.py 在 render 前注册的 resize 记录器：捕获初始客户端尺寸。"""
+    """main.py 注册的尺寸记录器；视口高度以 resize 事件为准。"""
     global INITIAL_SIZE
     INITIAL_SIZE = (width, height)
 
-# ---------- 布局与主题常量 ----------
-MENU_H = 48.0                       # 顶部菜单栏高度
-STATUS_H = 32.0                     # 底部状态栏高度
-BG_COLOR = "#141414"                # 图片区背景（近黑，沉浸式看图）
-PANEL_COLOR = "#1f1f1f"             # 菜单 / 状态栏面板底色
-PANEL_BORDER = "#333333"
-FG_COLOR = "#e6e6e6"
-FG_DIM = "#8f8f8f"
-
-MIN_ZOOM = 0.1                      # 最小缩放 10%
-MAX_ZOOM = 10.0                     # 最大缩放 1000%
-ZOOM_STEP = 1.12                    # 单次缩放步进系数
-
-# 悬停翻页按钮（叠在图片区左右两侧的半透明圆形箭头）
-NAV_SIZE = 46.0                     # 直径：≥44 是桌面端舒适的点击目标下限
-NAV_MARGIN = 14.0                   # 距图片区左右边缘的距离
-NAV_ICON = 28
-
-SLIDESHOW_INTERVALS = (1, 2, 3, 5, 10)   # 幻灯片可选间隔（秒）
-
-
-def _format_service_info(info: dict | None) -> str:
-    """把服务统计排版成弹窗里的多行文本（诊断共享缓存是否真的在工作）。"""
-    if not info:
-        return "（无数据）"
-    if info.get("note"):
-        return str(info["note"])
-    lines = [
-        f"角色：{info.get('role', '-')}",
-        f"服务进程：pid {info.get('pid', '-')}",
-        f"连接：{info.get('backend', '-')}",
-    ]
-    blobs = info.get("blobs") or {}
-    if blobs:
-        lines += [
-            "",
-            f"磁盘缓存：{blobs.get('count', 0)} 个 · {format_size(blobs.get('bytes', 0))}"
-            f"（上限 {format_size(blobs.get('limit_bytes', 0))}）",
-            f"命中 {blobs.get('hits', 0)} 次 · 未命中 {blobs.get('misses', 0)} 次",
-        ]
-        hits, misses = blobs.get("hits", 0), blobs.get("misses", 0)
-        if hits + misses:
-            lines.append(f"命中率：{hits * 100 // (hits + misses)}%")
-    decoded = info.get("decoded") or {}
-    if decoded:
-        lines.append(
-            f"解码缓存：{decoded.get('entries', 0)} 张 · "
-            f"{decoded.get('megapixels', 0)} MP"
-        )
-    counters = info.get("counters") or {}
-    if counters:
-        lines.append(
-            f"预加载：完成 {counters.get('preload_done', 0)} · "
-            f"排队 {info.get('pending', 0)}"
-        )
-    if info.get("error"):
-        lines += ["", f"错误：{info['error']}"]
-    lines += ["", "状态栏出现「缓存」= 这张图直接读自共享缓存，本窗口没有解码。"]
-    return "\n".join(lines)
-
-
-def _nav_button(
-    icon: ft.IconData,
-    left: float,
-    top: float,
-    on_click,
-) -> ft.IconButton:
-    """图片区左右悬浮的半透明翻页箭头。
-
-    用 IconButton 而不是自绘 Container：手型光标、按下涟漪、悬停高亮都由框架按
-    控制状态（default/hovered）自动切换，鼠标移动不经过 Python，不会引起整页重建。
-
-    视觉上是一层「深色玻璃」：底色半透明黑 + 一圈更亮的细描边 + 轻微投影，
-    这样压在白底照片和深色照片上都立得住；图标只到 85% 白，不抢画面主体。
-
-    不加文字 tooltip：它贴着窗口边缘会把自己裁掉（Flutter 不会自动避让），
-    残缺的提示比没有更难看；箭头形状 + 悬停高亮 + 手型光标已足够表意。
-    """
-    return ft.IconButton(
-        icon=icon,
-        icon_size=NAV_ICON,
-        width=NAV_SIZE,
-        height=NAV_SIZE,
-        left=left,
-        top=top,
-        mouse_cursor=ft.MouseCursor.CLICK,
-        style=ft.ButtonStyle(
-            shape=ft.CircleBorder(),
-            padding=0,
-            animation_duration=140,
-            bgcolor={
-                ft.ControlState.DEFAULT: ft.Colors.with_opacity(0.38, ft.Colors.BLACK),
-                ft.ControlState.HOVERED: ft.Colors.with_opacity(0.72, ft.Colors.BLACK),
-            },
-            icon_color={
-                ft.ControlState.DEFAULT: ft.Colors.with_opacity(0.85, ft.Colors.WHITE),
-                ft.ControlState.HOVERED: ft.Colors.WHITE,
-            },
-            overlay_color=ft.Colors.with_opacity(0.08, ft.Colors.WHITE),
-            side=ft.BorderSide(1, ft.Colors.with_opacity(0.16, ft.Colors.WHITE)),
-            elevation={
-                ft.ControlState.DEFAULT: 2,
-                ft.ControlState.HOVERED: 6,
-            },
-            shadow_color=ft.Colors.with_opacity(0.45, ft.Colors.BLACK),
-        ),
-        on_click=on_click,
-    )
-
 
 def _ctrl_pressed() -> bool:
-    """查询系统级 Ctrl 键是否按住（Windows）。
-
-    作为 KeyboardListener 的兜底：焦点不在图片区时监听器收不到修饰键事件。
-    """
+    """系统级 Ctrl 状态（KeyboardListener 失焦时的兜底，Windows）。"""
     try:
-        import ctypes
-
         return bool(ctypes.windll.user32.GetAsyncKeyState(0x11) & 0x8000)
     except Exception:
         return False
 
 
-@dataclass
-class ViewState:
-    """视图状态：显示模式、缩放倍率与平移偏移。"""
-    mode: str = "fit"               # fit(适应窗口) | fit_width(适应宽度) | actual(1:1) | custom(自定义)
-    zoom: float = 1.0               # 自定义缩放倍率（0.1 ~ 10）
-    pan_x: float = 0.0
-    pan_y: float = 0.0
-
-    def reset(self) -> None:
-        """回到「适应窗口」并复位平移。"""
-        self.mode = "fit"
-        self.zoom = 1.0
-        self.pan_x = 0.0
-        self.pan_y = 0.0
+def _image_extensions() -> list[str]:
+    """文件对话框的后缀过滤表（不带点）；每次现算，避免模块级可变列表被外部改。"""
+    return sorted(ext.lstrip(".") for ext in IMAGE_EXTS)
 
 
-@dataclass
-class AppState:
-    """应用全部可变状态；实例保存在 use_ref 中，回调直接读写最新值。"""
-    manager: ImageManager = field(default_factory=lambda: _manager_factory())
-    view: ViewState = field(default_factory=ViewState)
-    fullscreen: bool = False
-    slideshow_on: bool = False
-    paused: bool = False
-    interval: float = 3.0                       # 幻灯片间隔（秒）
-    ctrl_held: bool = False                     # Ctrl 是否按住（KeyboardListener 跟踪）
-    shift_held: bool = False                    # Shift 是否按住（KeyboardListener 跟踪）
-    viewport: tuple[float, float] = (900.0, 560.0)   # 图片区可视尺寸
-    gen: int = 0                                # 异步解码代际计数，防止旧任务覆盖新状态
-    slideshow_task: asyncio.Future | None = None
-    sel_rect: tuple[float, float, float, float] | None = None   # 左键拖拽选区（视口坐标 x0,y0,x1,y1）
-    sel_drag_start: tuple[float, float] | None = None          # 选区拖拽起点（本地坐标）
-    right_last: tuple[float, float] | None = None              # 右键拖拽上一位置（本地坐标）
-    anim_playing: bool = False                                 # 动图播放中
-    anim_paused: bool = False                                  # 动图暂停
-    anim_task: asyncio.Future | None = None                    # 动图播放任务
-
-
-def _compute_scale(view: ViewState, iw: float, ih: float, vw: float, vh: float) -> float:
-    """按显示模式计算缩放倍率（严格保持宽高比）。"""
-    if iw <= 0 or ih <= 0 or vw <= 0 or vh <= 0:
-        return 1.0
-    if view.mode == "fit":
-        return min(vw / iw, vh / ih)
-    if view.mode == "fit_width":
-        return vw / iw
-    if view.mode == "actual":
-        return 1.0
-    return view.zoom
-
-
-def _clamp_pan(view: ViewState, iw: float, ih: float, vw: float, vh: float, scale: float) -> None:
-    """平移边界限制：图片边缘不允许进入视口内部；未溢出时强制居中。"""
-    disp_w, disp_h = iw * scale, ih * scale
-    max_x = max(0.0, (disp_w - vw) / 2)
-    max_y = max(0.0, (disp_h - vh) / 2)
-    view.pan_x = min(max(-max_x, view.pan_x), max_x)
-    view.pan_y = min(max(-max_y, view.pan_y), max_y)
-
-
-def _zoom_anchored(view: ViewState, iw: float, ih: float, vw: float, vh: float,
-                   cx: float, cy: float, factor: float) -> bool:
-    """以视口内 (cx, cy) 为锚点缩放：锚点下的图片像素在缩放前后保持不动。
-
-    返回 True 表示缩放生效。
-    """
-    if iw <= 0 or vw <= 0:
-        return False
-    s0 = _compute_scale(view, iw, ih, vw, vh)          # 当前渲染倍率
-    s1 = max(MIN_ZOOM, min(MAX_ZOOM, s0 * factor))
-    if abs(s1 - s0) < 1e-9:
-        return False
-    left0 = (vw - iw * s0) / 2 + view.pan_x            # 缩放前图片左上角
-    top0 = (vh - ih * s0) / 2 + view.pan_y
-    ix = (cx - left0) / s0                             # 锚点下的图片像素（图像坐标）
-    iy = (cy - top0) / s0
-    view.mode = "custom"
-    view.zoom = s1
-    view.pan_x = cx - ix * s1 - (vw - iw * s1) / 2     # 缩放后锚点像素仍位于光标处
-    view.pan_y = cy - iy * s1 - (vh - ih * s1) / 2
-    _clamp_pan(view, iw, ih, vw, vh, s1)
-    return True
-
-
-@ft.component
+@ui.component
 def ImageViewerApp():
-    page = ft.context.page
-    app = ft.use_ref(AppState())
+    page = ui.context.page
+    # use_memo 锁住同一份状态对象：组件每次重绘都复用它，不会丢掉异步任务句柄。
+    app = ui.use_memo(lambda: AppState(), [])
 
-    # ---- UI 镜像状态：统一由 sync_ui() 写入 ----
-    img_src, set_img_src = ft.use_state(None)              # 当前图片 data URI
-    img_wh, set_img_wh = ft.use_state((0, 0))              # 渲染后像素尺寸
-    file_name, set_file_name = ft.use_state("")
-    info_text, set_info_text = ft.use_state("")
-    page_text, set_page_text = ft.use_state("")
-    fullscreen, set_fullscreen = ft.use_state(False)
-    slideshow_on, set_slideshow_on = ft.use_state(False)
-    paused, set_paused = ft.use_state(False)
-    anim_playing, set_anim_playing = ft.use_state(False)
-    anim_paused, set_anim_paused = ft.use_state(False)
-    pan_xy, set_pan_xy = ft.use_state((0.0, 0.0))
-    sel_rect_state, set_sel_rect_state = ft.use_state(None)   # 选区矩形（视口坐标）
-    _, set_render_tick = ft.use_state(0)   # 渲染计数：强制视图状态变化后重绘
-    show_delete, set_show_delete = ft.use_state(False)
-    snack, set_snack = ft.use_state(None)
-    assoc_action, set_assoc_action = ft.use_state(None)
-    assoc_status, set_assoc_status = ft.use_state(None)
-    service_info, set_service_info = ft.use_state(None)   # 共享缓存状态（诊断）
-    # 启动参数（双击图片启动）还在加载时不画占位提示：直接留深色空白，
-    # 否则「占位图标 -> 图片」会白闪一下。无启动参数时空窗口正常显示提示。
-    startup_done, set_startup_done = ft.use_state(START_PATH is None)
+    # ── 界面镜像：统一由 sync_ui() 写入 ─────────────────────────────────
+    img_src, set_img_src = ui.use_state(None)
+    image_size, set_image_size = ui.use_state(ui.ViewSize())
+    view, set_view = ui.use_state(ui.ViewTransform())
+    status, set_status = ui.use_state(StatusSnapshot())
+    fullscreen, set_fullscreen = ui.use_state(False)
+    slideshow_on, set_slideshow_on = ui.use_state(False)
+    paused, set_paused = ui.use_state(False)
+    anim_playing, set_anim_playing = ui.use_state(False)
+    anim_paused, set_anim_paused = ui.use_state(False)
+    selection, set_selection = ui.use_state(None)          # ui.ViewRect | None
+    _, set_render_tick = ui.use_state(0)                    # 纯视图变化的强制重绘
+    show_delete, set_show_delete = ui.use_state(False)
+    assoc_action, set_assoc_action = ui.use_state(None)
+    assoc_status, set_assoc_status = ui.use_state(None)
+    service_info, set_service_info = ui.use_state(None)
+    # 启动参数还在解码时不画占位，避免「占位 → 图片」闪一下。
+    startup_done, set_startup_done = ui.use_state(START_PATH is None)
 
-    picker_ref = ft.use_ref(None)                  # FilePicker 服务（首帧注册）
-    if picker_ref.current is None:
-        picker_ref.current = ft.FilePicker()
-    dispatch_ref = ft.use_ref(None)             # 键盘分发（每帧刷新，闭包不陈旧）
-    resize_ref = ft.use_ref(None)               # 窗口尺寸分发
-    kb_listener_ref = ft.use_ref(None)          # KeyboardListener 实例（用于重聚焦）
+    dialog_ref = ui.use_ref(None)                 # ui.FileDialog（构造即注册到页面）
+    if dialog_ref.current is None:
+        dialog_ref.current = ui.FileDialog()
+    dialog: ui.FileDialog = dialog_ref.current
+    dispatch_ref = ui.use_ref(None)               # 键盘分发（每帧刷新，闭包不陈旧）
+    resize_ref = ui.use_ref(None)
+    kb_listener_ref = ui.use_ref(None)            # KeyboardListener（用于重聚焦）
 
-    # ---------- 状态同步 ----------
-
+    # ── 状态同步 ───────────────────────────────────────────────────────
     def sync_ui() -> None:
-        """把 AppState 最新值同步到 UI 镜像状态，驱动一次组件重绘。"""
         try:
             _sync_ui_body()
         except RuntimeError:
-            pass   # 窗口关闭、会话销毁后的迟到同步直接忽略
+            pass                                  # 窗口关闭后的迟到同步直接忽略
 
     def _sync_ui_body() -> None:
-        st = app.current
-        if st.sel_rect is not None:           # 视图变化后选区失效，统一清除
-            st.sel_rect = None
-            set_sel_rect_state(None)
-        uri, w, h = st.manager.get_display()
+        if app.sel_rect is not None:               # 视图变化后选区失效
+            app.sel_rect = None
+            set_selection(None)
+        uri, w, h = app.manager.get_display()
         set_img_src(uri)
-        set_img_wh((w, h))
-        info = st.manager.info()
-        info_str = f"{info['w']}×{info['h']} · {format_size(info['size'])}"
-        if info["frames"] > 1:
-            info_str += f" · 动图 {st.manager.current_frame + 1}/{info['frames']}帧"
-        if getattr(st.manager, "last_shared_hit", False):
-            info_str += " · 缓存"      # 这一帧来自共享缓存，本窗口没有解码
-        set_file_name(info["name"])
-        set_info_text(info_str if info["total"] else "")
-        set_fullscreen(st.fullscreen)
-        set_slideshow_on(st.slideshow_on)
-        set_paused(st.paused)
-        set_anim_playing(st.anim_playing)
-        set_anim_paused(st.anim_paused)
-        # 计算当前缩放并夹紧平移边界
-        scale = _compute_scale(st.view, w, h, *st.viewport)
-        _clamp_pan(st.view, w, h, *st.viewport, scale)
-        set_pan_xy((st.view.pan_x, st.view.pan_y))
-        # 状态栏实时缩放百分比（像素级查看时确认当前倍率）
-        if st.view.mode == "fit":
-            zoom_label = f"{scale * 100:.0f}% 适应"
-        elif st.view.mode == "fit_width":
-            zoom_label = f"{scale * 100:.0f}% 适宽"
-        elif st.view.mode == "actual":
-            zoom_label = "100%"
-        else:
-            zoom_label = f"{st.view.zoom * 100:.0f}%"
-        set_page_text(
-            f"{info['pos']} / {info['total']} · {zoom_label}" if info["total"] else ""
-        )
-        # 0.86.x 的 use_state 做浅比较：纯视图操作（适应窗口/1:1/缩放）的镜像
-        # 状态可能全部相同而跳过重绘，这里用递增计数强制渲染一次
-        set_render_tick(lambda t: t + 1)
+        app.image_size = ui.ViewSize.of(w, h)
+        set_image_size(app.image_size)
+        # 倍率变了要重新夹平移边界；clamp_pan 返回新对象，原样返回表示无需变化。
+        app.view = ui.clamp_pan(app.view, app.image_size, app.viewport)
+        set_view(app.view)
+        set_status(format_status(app.manager, app.view, app.image_size, app.viewport))
+        set_fullscreen(app.fullscreen)
+        set_slideshow_on(app.slideshow_on)
+        set_paused(app.paused)
+        set_anim_playing(app.anim_playing)
+        set_anim_paused(app.anim_paused)
+        # use_state 浅比较：纯视图操作可能让所有镜像都相同，用计数强制重绘一次。
+        set_render_tick(lambda tick: tick + 1)
 
-    def toast(message: str, seconds: float = 2.5) -> None:
-        """底部轻提示（SnackBar）。"""
-        set_snack(ft.SnackBar(
-            content=ft.Text(message, color=FG_COLOR),
-            bgcolor=PANEL_COLOR,
-            duration=ft.Duration(seconds=seconds),
-        ))
+    def notify(message: str, *, tone: str = "info", seconds: float = 2.5) -> None:
+        toast(page, message, tone=tone, seconds=seconds)
 
-        async def _clear() -> None:
-            await asyncio.sleep(seconds)
-            set_snack(None)
-
-        page.run_task(_clear)
-
-    # ---------- 图片加载 ----------
-
-    def _decode_worker(st: AppState) -> None:
-        """后台线程：定位首张有效图片 -> 编码当前图 -> 预加载前后各一张。"""
-        if not st.manager.files:
+    # ── 图片加载 ───────────────────────────────────────────────────────
+    def _decode_worker() -> None:
+        if not app.manager.files:
             return
-        st.manager.ensure_valid()
-        st.manager.get_display()
-        st.manager.preload()
+        app.manager.ensure_valid()
+        app.manager.get_display()
+        app.manager.preload()
 
-    async def _load_current_async(st: AppState) -> None:
-        """异步加载当前图片：后台解码/编码，完成后同步 UI。"""
-        st.gen += 1
-        gen = st.gen
-        await asyncio.get_running_loop().run_in_executor(None, _decode_worker, st)
-        if gen != st.gen:
-            return                              # 已被更新的请求取代
+    async def _load_current_async() -> None:
+        app.gen += 1
+        gen = app.gen
+        await asyncio.get_running_loop().run_in_executor(None, _decode_worker)
+        if gen != app.gen:
+            return                                # 已被更新的请求取代
         sync_ui()
-        if st.manager.get_display()[0] is None:
-            reason = st.manager.last_error
+        if app.manager.get_display()[0] is None:
+            reason = app.manager.last_error
             hint = f"（{reason}）" if reason and len(reason) < 80 else ""
-            toast(f"无法打开图片{hint}，已跳过")
-        # 动图自动播放 / 静态图停止播放
-        n = st.manager.frame_count()
-        if (n > 1) != st.anim_playing:
-            st.anim_playing = n > 1
-            st.anim_paused = False
+            notify(f"无法打开图片{hint}，已跳过", tone="warning")
+        frames = app.manager.frame_count()
+        if (frames > 1) != app.anim_playing:
+            app.anim_playing = frames > 1
+            app.anim_paused = False
             sync_ui()
-        if len(st.manager.files) == 1:      # 单图打开：同目录列表留到首帧之后再补
-            page.run_task(_expand_folder_async, st, gen)
+        if len(app.manager.files) == 1:
+            page.run_task(_expand_folder_async, gen)
 
-    async def _expand_folder_async(st: AppState, gen: int) -> None:
-        """首帧之后再补全「同目录的上一张/下一张」，不占打开耗时。
-
-        扫描放在后台线程（慢盘/万级文件目录也只影响这之后的可切范围，不影响出图）；
-        结果回主线程时才校验 gen —— 扫描期间用户若已切图或另开文件，就丢弃这次结果，
-        不会用旧的目录覆盖新上下文。
-        """
+    async def _expand_folder_async(gen: int) -> None:
+        """首帧之后再补全同目录列表：出图耗时与目录里有多少文件无关。"""
         loop = asyncio.get_running_loop()
-        listing = await loop.run_in_executor(None, st.manager.folder_candidates)
-        if gen != st.gen or not st.manager.apply_folder_listing(listing):
+        listing = await loop.run_in_executor(None, app.manager.folder_candidates)
+        if gen != app.gen or not app.manager.apply_folder_listing(listing):
             return
-        sync_ui()                            # 状态栏页码 1/1 -> n/N
-        await loop.run_in_executor(None, st.manager.preload)   # 热身后切图更顺
+        sync_ui()
+        await loop.run_in_executor(None, app.manager.preload)
 
     async def _goto(delta: int) -> None:
         """切换图片（首尾循环、自动跳过坏图），异步解码。"""
-        st = app.current
-        if st.manager.navigate(delta):
-            await _load_current_async(st)
-        elif st.manager.files and st.manager.get_display()[0] is None:
-            toast("没有可显示的图片")
+        if app.manager.navigate(delta):
+            await _load_current_async()
+        elif app.manager.files and app.manager.get_display()[0] is None:
+            notify("没有可显示的图片", tone="warning")
             sync_ui()
 
     def _nav_click(delta: int) -> None:
-        """点击悬浮箭头：切图，并把键盘焦点还给 KeyboardListener。
-
-        不还焦点的话焦点会留在按钮上，KeyboardListener 收不到后续的 Ctrl 按下，
-        Ctrl+滚轮锚点缩放会「点过箭头之后就失灵」。
-        """
+        """点击箭头后把焦点还给 KeyboardListener，否则 Ctrl+滚轮会失灵。"""
         page.run_task(_goto, delta)
         listener = kb_listener_ref.current
         if listener is not None:
             page.run_task(listener.focus)
 
-    # ---------- 动图播放 ----------
-
+    # ── 动图播放 ───────────────────────────────────────────────────────
     async def _refresh_frame_async() -> None:
-        """后台重编码当前帧并同步 UI（动图逐帧显示）。"""
-        st = app.current
-        await asyncio.get_running_loop().run_in_executor(None, st.manager.get_display)
+        await asyncio.get_running_loop().run_in_executor(None, app.manager.get_display)
         sync_ui()
 
     async def _anim_loop() -> None:
-        """动图播放循环：按每帧时长推进。"""
-        st = app.current
         try:
-            while st.anim_playing:
-                await asyncio.sleep(st.manager.frame_duration() / 1000)
-                if st.anim_paused or not st.anim_playing:
+            while app.anim_playing:
+                await asyncio.sleep(app.manager.frame_duration() / 1000)
+                if app.anim_paused or not app.anim_playing:
                     continue
-                st.manager.next_frame()
+                app.manager.next_frame()
                 await _refresh_frame_async()
         except asyncio.CancelledError:
             pass
         finally:
-            st.anim_task = None
+            app.anim_task = None
 
     def _anim_effect() -> None:
-        """动图播放任务的生命周期管理（随 anim_playing 启停）。"""
-        st = app.current
-        if st.anim_playing and (st.anim_task is None or st.anim_task.done()):
-            st.anim_task = page.run_task(_anim_loop)
-        elif not st.anim_playing and st.anim_task is not None:
-            st.anim_task.cancel()
-            st.anim_task = None
+        if app.anim_playing and (app.anim_task is None or app.anim_task.done()):
+            app.anim_task = page.run_task(_anim_loop)
+        elif not app.anim_playing and app.anim_task is not None:
+            app.anim_task.cancel()
+            app.anim_task = None
 
-    ft.use_effect(_anim_effect, [app.current.anim_playing])
+    ui.use_effect(_anim_effect, [anim_playing])
 
-    # ---------- 动作（快捷键 / 菜单 / 鼠标共用） ----------
-
-    async def act_open_file(_e=None) -> None:
+    # ── 动作（快捷键 / 菜单 / 鼠标共用） ────────────────────────────────
+    async def act_open_file() -> None:
         try:
-            files = await picker_ref.current.pick_files(
-                dialog_title="打开图片",
-                file_type=ft.FilePickerFileType.CUSTOM,
-                allowed_extensions=sorted(ext.lstrip(".") for ext in IMAGE_EXTS),
-                allow_multiple=False,
+            files = await dialog.pick_files(
+                title="打开图片", extensions=_image_extensions(), multiple=False
             )
         except Exception as exc:
-            toast(f"打开文件失败：{exc}")
+            notify(f"打开文件失败：{exc}", tone="error")
             return
         if not files:
             return
-        st = app.current
-        if not st.manager.open_path(files[0].path):
-            toast("无法打开该文件（不支持或已损坏）")
+        if not app.manager.open_path(str(files[0])):
+            notify("无法打开该文件（不支持或已损坏）", tone="warning")
             return
-        await _load_current_async(st)
+        await _load_current_async()
 
-    async def act_open_folder(_e=None) -> None:
+    async def act_open_folder() -> None:
         try:
-            folder = await picker_ref.current.get_directory_path(dialog_title="打开文件夹")
+            folder = await dialog.pick_directory(title="打开文件夹")
         except Exception as exc:
-            toast(f"打开文件夹失败：{exc}")
+            notify(f"打开文件夹失败：{exc}", tone="error")
             return
-        if not folder:
+        if folder is None:
             return
-        st = app.current
         total = await asyncio.get_running_loop().run_in_executor(
-            None, st.manager.scan_folder, folder
+            None, app.manager.scan_folder, str(folder)
         )
         if total == 0:
-            toast("该文件夹中没有可显示的图片")
+            notify("该文件夹中没有可显示的图片", tone="warning")
             sync_ui()
             return
-        await _load_current_async(st)
+        await _load_current_async()
 
-    async def act_open_new_window(_e=None) -> None:
-        """在新窗口打开：真正另起一个进程，但复用主进程的共享缓存。
-
-        这是「单程序打开多张图」的入口 —— 第二张图如果已经被预加载过，
-        新窗口启动时直接读编码好的结果，连解码都省了。
-        """
+    async def act_open_new_window() -> None:
+        """真正另起一个进程，复用主进程的共享缓存。"""
         try:
-            files = await picker_ref.current.pick_files(
-                dialog_title="在新窗口打开图片",
-                file_type=ft.FilePickerFileType.CUSTOM,
-                allowed_extensions=sorted(ext.lstrip(".") for ext in IMAGE_EXTS),
-                allow_multiple=True,
+            files = await dialog.pick_files(
+                title="在新窗口打开图片", extensions=_image_extensions(), multiple=True
             )
         except Exception as exc:
-            toast(f"打开文件失败：{exc}")
+            notify(f"打开文件失败：{exc}", tone="error")
             return
         if not files:
             return
         from .service import spawn
 
-        launched = sum(1 for f in files if spawn.launch_window(f.path))
+        launched = sum(1 for item in files if spawn.launch_window(str(item)))
         if launched == 0:
-            toast("无法启动新窗口")
+            notify("无法启动新窗口", tone="error")
         elif launched > 1:
-            toast(f"已在新窗口打开 {launched} 张图片")
-        _ = _e
+            notify(f"已在新窗口打开 {launched} 张图片", tone="success")
 
-    def act_zoom_in(_e=None) -> None:
-        st = app.current
-        st.view.mode = "custom"
-        st.view.zoom = min(MAX_ZOOM, st.view.zoom * ZOOM_STEP)
+    def act_zoom_in() -> None:
+        app.view = ui.zoom_by(app.view, app.image_size, app.viewport, ui.ZOOM_STEP)
         sync_ui()
 
-    def act_zoom_out(_e=None) -> None:
-        st = app.current
-        st.view.mode = "custom"
-        st.view.zoom = max(MIN_ZOOM, st.view.zoom / ZOOM_STEP)
+    def act_zoom_out() -> None:
+        app.view = ui.zoom_by(app.view, app.image_size, app.viewport, 1 / ui.ZOOM_STEP)
         sync_ui()
 
-    def act_fit_window(_e=None) -> None:
-        app.current.view.reset()
+    def act_fit_window() -> None:
+        app.view = app.view.reset()
         sync_ui()
 
-    def act_fit_width(_e=None) -> None:
-        st = app.current
-        st.view.mode = "fit_width"
-        st.view.pan_x = st.view.pan_y = 0.0
+    def act_fit_width() -> None:
+        app.view = app.view.with_mode("fit_width")
         sync_ui()
 
-    def act_actual_size(_e=None) -> None:
-        st = app.current
-        st.view.mode = "actual"
-        st.view.pan_x = st.view.pan_y = 0.0
+    def act_actual_size() -> None:
+        app.view = app.view.with_mode("actual")
         sync_ui()
 
-    async def act_rotate_cw(_e=None) -> None:
-        app.current.manager.rotate_cw()
-        await _load_current_async(app.current)
+    async def act_rotate_cw() -> None:
+        app.manager.rotate_cw()
+        await _load_current_async()
 
-    async def act_rotate_ccw(_e=None) -> None:
-        app.current.manager.rotate_ccw()
-        await _load_current_async(app.current)
+    async def act_rotate_ccw() -> None:
+        app.manager.rotate_ccw()
+        await _load_current_async()
 
-    async def act_flip_h(_e=None) -> None:
-        app.current.manager.flip_horizontal()
-        await _load_current_async(app.current)
+    async def act_flip_h() -> None:
+        app.manager.flip_horizontal()
+        await _load_current_async()
 
-    async def act_flip_v(_e=None) -> None:
-        app.current.manager.flip_vertical()
-        await _load_current_async(app.current)
+    async def act_flip_v() -> None:
+        app.manager.flip_vertical()
+        await _load_current_async()
 
-    async def act_fullscreen(_e=None) -> None:
-        st = app.current
-        st.fullscreen = not st.fullscreen
-        page.window.full_screen = st.fullscreen
+    async def act_fullscreen() -> None:
+        app.fullscreen = not app.fullscreen
+        page.window.full_screen = app.fullscreen
         _refresh_viewport()
         page.update()
         sync_ui()
 
-    def act_slideshow(_e=None) -> None:
-        st = app.current
-        st.slideshow_on = not st.slideshow_on
-        if st.slideshow_on:
-            st.paused = False
+    def act_slideshow() -> None:
+        app.slideshow_on = not app.slideshow_on
+        if app.slideshow_on:
+            app.paused = False
         sync_ui()
 
-    def act_pause(_e=None) -> None:
-        st = app.current
-        if st.slideshow_on:
-            st.paused = not st.paused
+    def act_pause() -> None:
+        if app.slideshow_on:
+            app.paused = not app.paused
             sync_ui()
 
-    # ---------- 动图控制 / 导出 ----------
-
-    def act_anim_toggle(_e=None) -> None:
-        """动图播放 / 暂停 / 继续。"""
-        st = app.current
-        if st.manager.frame_count() <= 1:
+    def act_anim_toggle() -> None:
+        if app.manager.frame_count() <= 1:
             return
-        if st.anim_playing and st.anim_paused:
-            st.anim_paused = False            # 继续
-        elif st.anim_playing:
-            st.anim_paused = True             # 暂停
+        if app.anim_playing and app.anim_paused:
+            app.anim_paused = False
+        elif app.anim_playing:
+            app.anim_paused = True
         else:
-            st.anim_playing = True            # 播放
+            app.anim_playing = True
         sync_ui()
 
     def _step_frame(delta: int) -> None:
-        """动图逐帧步进（自动暂停播放）。"""
-        st = app.current
-        if st.manager.frame_count() <= 1:
+        if app.manager.frame_count() <= 1:
             return
-        st.anim_paused = True
-        st.manager.next_frame(delta)
+        app.anim_paused = True
+        app.manager.next_frame(delta)
         page.run_task(_refresh_frame_async)
 
-    def act_frame_prev(_e=None) -> None:
-        """上一帧。"""
+    def act_frame_prev() -> None:
         _step_frame(-1)
 
-    def act_frame_next(_e=None) -> None:
-        """下一帧。"""
+    def act_frame_next() -> None:
         _step_frame(1)
 
-    async def act_export_frame(_e=None) -> None:
-        """导出当前帧（含旋转/翻转）为 PNG。"""
-        st = app.current
-        if not st.manager.files:
+    async def act_export_frame() -> None:
+        if not app.manager.files:
             return
-        name = Path(st.manager.info()["name"]).stem
+        name = Path(app.manager.info()["name"]).stem
         try:
-            path = await picker_ref.current.save_file(
-                dialog_title="导出当前帧",
-                file_name=f"{name}_frame{st.manager.current_frame + 1:03d}.png",
-                allowed_extensions=["png"],
-                file_type=ft.FilePickerFileType.IMAGE,
+            target = await dialog.save_file(
+                title="导出当前帧",
+                file_name=f"{name}_frame{app.manager.current_frame + 1:03d}.png",
+                extensions=["png"],
             )
         except Exception as exc:
-            toast(f"导出失败：{exc}")
+            notify(f"导出失败：{exc}", tone="error")
             return
-        if not path:
+        if target is None:
             return
         try:
             await asyncio.get_running_loop().run_in_executor(
-                None, lambda: st.manager.save_current_frame(path)
+                None, lambda: app.manager.save_current_frame(str(target))
             )
-            toast(f"已导出：{Path(path).name}")
+            notify(f"已导出：{target.name}", tone="success")
         except Exception as exc:
-            toast(f"导出失败：{exc}")
+            notify(f"导出失败：{exc}", tone="error")
 
-    def act_file_assoc_install(_e=None) -> None:
+    # ── 文件关联 ───────────────────────────────────────────────────────
+    def act_assoc_install() -> None:
         set_assoc_action("install")
 
-    def act_file_assoc_uninstall(_e=None) -> None:
+    def act_assoc_uninstall() -> None:
         set_assoc_action("uninstall")
 
-    def act_file_assoc_status(_e=None) -> None:
-        page.run_task(_load_file_assoc_status)
+    def act_assoc_status() -> None:
+        page.run_task(_load_assoc_status)
 
-    async def _load_file_assoc_status() -> None:
+    async def _load_assoc_status() -> None:
         if os.name != "nt":
-            toast("文件关联仅适用于 Windows")
+            notify("文件关联仅适用于 Windows", tone="warning")
             return
 
         def read_status() -> str:
@@ -658,27 +394,23 @@ def ImageViewerApp():
             return file_assoc.status_text()
 
         try:
-            status_text = await asyncio.get_running_loop().run_in_executor(
-                None, read_status
-            )
+            text = await asyncio.get_running_loop().run_in_executor(None, read_status)
         except Exception as exc:
-            toast(f"读取文件关联状态失败：{exc}")
+            notify(f"读取文件关联状态失败：{exc}", tone="error")
             return
-        set_assoc_status(status_text)
+        set_assoc_status(text)
 
-    async def _run_file_assoc(action: str) -> None:
+    async def _run_assoc(action: str) -> None:
         set_assoc_action(None)
         if os.name != "nt":
-            toast("文件关联仅适用于 Windows")
+            notify("文件关联仅适用于 Windows", tone="warning")
             return
 
         def operate() -> None:
             from . import file_assoc
 
             buffer = ctypes.create_unicode_buffer(32768)
-            length = ctypes.windll.kernel32.GetModuleFileNameW(
-                None, buffer, len(buffer)
-            )
+            length = ctypes.windll.kernel32.GetModuleFileNameW(None, buffer, len(buffer))
             if not length:
                 raise RuntimeError("无法获取当前程序 exe 路径")
             exe = Path(buffer.value).resolve()
@@ -693,23 +425,20 @@ def ImageViewerApp():
             await asyncio.get_running_loop().run_in_executor(None, operate)
         except (Exception, SystemExit) as exc:
             message = str(exc) or exc.__class__.__name__
-            toast(f"文件关联设置失败：{message}")
+            notify(f"文件关联设置失败：{message}", tone="error")
             return
-        toast("已注册 ImageViewer 文件关联" if action == "install" else "已取消 ImageViewer 文件关联")
+        notify(
+            "已注册 ImageViewer 文件关联" if action == "install"
+            else "已取消 ImageViewer 文件关联",
+            tone="success",
+        )
 
-    def set_interval(seconds: float) -> None:
-        app.current.interval = seconds
-        sync_ui()
-
-    # ---------- 共享缓存诊断 ----------
-
-    def act_service_status(_e=None) -> None:
+    # ── 共享缓存诊断 ───────────────────────────────────────────────────
+    def act_service_status() -> None:
         page.run_task(_load_service_status)
 
     async def _load_service_status() -> None:
-        """读共享服务的统计信息（宿主 pid、命中率、缓存体积、预加载进度）。"""
-        st = app.current
-        stats = getattr(st.manager, "stats", None)
+        stats = getattr(app.manager, "stats", None)
         if stats is None:
             set_service_info({
                 "role": "本地模式",
@@ -723,148 +452,142 @@ def ImageViewerApp():
             return
         set_service_info(info or {})
 
-    def act_delete(_e=None) -> None:
-        if app.current.manager.files:
+    # ── 删除 / 退出 ────────────────────────────────────────────────────
+    def act_delete() -> None:
+        if app.manager.files:
             set_show_delete(True)
 
-    async def confirm_delete(_e=None) -> None:
+    async def confirm_delete() -> None:
         set_show_delete(False)
-        st = app.current
         try:
-            removed = st.manager.delete_current()
+            removed = app.manager.delete_current()
         except Exception as exc:
-            toast(f"删除失败：{exc}")
+            notify(f"删除失败：{exc}", tone="error")
             sync_ui()
             return
         sync_ui()
-        toast(f"已删除：{removed}")
-        # 删除后当前图变了：后台解码新的一张（共享缓存命中时几乎立刻返回）
-        await _load_current_async(st)
+        notify(f"已删除：{removed}", tone="success")
+        await _load_current_async()
 
-    async def act_exit(_e=None) -> None:
-        """退出程序（Esc / 菜单「退出」，与 IrfanView 一致）。
-
-        唯一的例外是删除确认弹窗打开时——此时 Esc 只关掉弹窗，
-        否则「想取消删除」会变成「误关整个程序」。
-        """
+    async def act_exit() -> None:
+        """Esc / 菜单退出；删除确认弹窗打开时 Esc 只关弹窗。"""
         if show_delete:
             set_show_delete(False)
             return
         try:
             await page.window.close()
         except Exception:
-            # 窗口关闭后会话随即断开，close() 的往返调用常会抛 "Session closed"；
-            # 这正是我们要的结果，不该以异常形式刷到控制台。
-            pass
+            pass                                  # 会话已断开即达到目的
 
-    # ---------- 键盘 / 窗口事件 ----------
+    def set_interval(seconds: float) -> None:
+        app.interval = float(seconds)
+        sync_ui()
 
-    ACTIONS: dict[str, object] = {
+    # ── 动作表：菜单、键盘、鼠标的唯一分发入口 ──────────────────────────
+    ACTIONS: dict[str, Callable[[], object]] = {
         "next": lambda: _goto(1),
         "prev": lambda: _goto(-1),
-        "zoom_in": lambda: act_zoom_in(),
-        "zoom_out": lambda: act_zoom_out(),
-        "fullscreen": lambda: act_fullscreen(),
-        "rotate_cw": lambda: act_rotate_cw(),
-        "rotate_ccw": lambda: act_rotate_ccw(),
-        "flip_h": lambda: act_flip_h(),
-        "flip_v": lambda: act_flip_v(),
-        "slideshow": lambda: act_slideshow(),
-        "pause": lambda: act_pause(),
-        "anim_toggle": lambda: act_anim_toggle(),
-        "frame_prev": lambda: act_frame_prev(),
-        "frame_next": lambda: act_frame_next(),
-        "export_frame": lambda: act_export_frame(),
-        "open_file": lambda: act_open_file(),
-        "open_folder": lambda: act_open_folder(),
-        "open_new_window": lambda: act_open_new_window(),
-        "fit_window": lambda: act_fit_window(),
-        "actual_size": lambda: act_actual_size(),
-        "delete": lambda: act_delete(),
-        "exit": lambda: act_exit(),
+        "zoom_in": act_zoom_in,
+        "zoom_out": act_zoom_out,
+        "fit_window": act_fit_window,
+        "fit_width": act_fit_width,
+        "actual_size": act_actual_size,
+        "fullscreen": act_fullscreen,
+        "rotate_cw": act_rotate_cw,
+        "rotate_ccw": act_rotate_ccw,
+        "flip_h": act_flip_h,
+        "flip_v": act_flip_v,
+        "slideshow": act_slideshow,
+        "pause": act_pause,
+        "anim_toggle": act_anim_toggle,
+        "frame_prev": act_frame_prev,
+        "frame_next": act_frame_next,
+        "export_frame": act_export_frame,
+        "open_file": act_open_file,
+        "open_folder": act_open_folder,
+        "open_new_window": act_open_new_window,
+        "assoc.install": act_assoc_install,
+        "assoc.uninstall": act_assoc_uninstall,
+        "assoc.status": act_assoc_status,
+        "service_status": act_service_status,
+        "delete": act_delete,
+        "exit": act_exit,
+        **{f"interval.{sec}": (lambda s=sec: set_interval(s))
+           for sec in (1, 2, 3, 5, 10)},
     }
 
+    # 菜单数据 ↔ 动作表的覆盖契约放在 tools/ui_logic_smoke.py 里做断言，
+    # 运行时不做任何遍历：每帧重绘不该为「检查」付一次代价。
+
     async def _run_action(action: str) -> None:
-        result = ACTIONS[action]()
+        handler = ACTIONS.get(action)
+        if handler is None:
+            return
+        result = handler()
         if asyncio.iscoroutine(result):
             await result
 
-    def _on_keyboard(e: ft.KeyboardEvent) -> None:
-        """页面级键盘分发：快捷键匹配。
+    def _on_menu_action(action: ui.MenuAction) -> None:
+        page.run_task(_run_action, action.key)
 
-        0.86.x 客户端在组合键事件上报告的 ctrl/shift 标志不可靠（实测恒为
-        False），因此以 KeyboardListener 跟踪的按键状态 + 系统键查询为准。
-        """
-        st = app.current
+    # ── 键盘 ───────────────────────────────────────────────────────────
+    def _on_keyboard(e) -> None:
+        """组合键标志上报不可靠，以 KeyboardListener 状态 + 系统查询为准。"""
         if not _ctrl_pressed() and not e.ctrl:
-            st.ctrl_held = False              # 自愈：系统确认 Ctrl 已松开
-        ctrl = e.ctrl or st.ctrl_held or _ctrl_pressed()
-        shift = e.shift or st.shift_held
+            app.ctrl_held = False                  # 自愈
+        ctrl = e.ctrl or app.ctrl_held or _ctrl_pressed()
+        shift = e.shift or app.shift_held
         action = match(e, ctrl=ctrl, shift=shift)
         if action:
             page.run_task(_run_action, action)
 
-    # ---------- 修饰键跟踪（KeyboardListener） ----------
-
     def _on_key_down(e) -> None:
-        """Ctrl/Shift 按下：记录修饰键状态（滚轮缩放与组合键判断用）。"""
         key = (e.key or "").lower()
         if "control" in key:
-            app.current.ctrl_held = True
+            app.ctrl_held = True
         elif "shift" in key:
-            app.current.shift_held = True
+            app.shift_held = True
 
     def _on_key_up(e) -> None:
-        """Ctrl/Shift 抬起：清除修饰键状态。"""
         key = (e.key or "").lower()
         if "control" in key:
-            app.current.ctrl_held = False
+            app.ctrl_held = False
         elif "shift" in key:
-            app.current.shift_held = False
+            app.shift_held = False
 
     def _on_tap_down(_e) -> None:
-        """点击图片区时把键盘焦点还给 KeyboardListener，恢复修饰键跟踪。"""
         listener = kb_listener_ref.current
         if listener is not None:
             page.run_task(listener.focus)
 
-    def _on_resize(e: ft.PageResizeEvent) -> None:
-        set_initial_size(e.width, e.height)   # 同步 INITIAL_SIZE，布局尺寸以此为准
-        _refresh_viewport(e.width, e.height)
-        sync_ui()
-
-    def _refresh_viewport(width: float | None = None, height: float | None = None) -> None:
-        """按客户端尺寸（减去菜单/状态栏）更新图片区可视尺寸。
-
-        尺寸优先级：resize 事件 > 启动时捕获的 INITIAL_SIZE > page.width/height。
-        0.86.x 中 page.width/height 在窗口尺寸变化后可能陈旧，需以事件值为准。
-        """
-        st = app.current
+    # ── 视口 ───────────────────────────────────────────────────────────
+    def _refresh_viewport(width: float | None = None,
+                          height: float | None = None) -> None:
+        """尺寸优先级：resize 事件 > INITIAL_SIZE > page.width/height。"""
         vw = width if width is not None else (
             INITIAL_SIZE[0] if INITIAL_SIZE else (page.width or 900)
         )
         vh = height if height is not None else (
             INITIAL_SIZE[1] if INITIAL_SIZE else (page.height or 600)
         )
-        if not st.fullscreen:
-            vh -= MENU_H + STATUS_H
-        st.viewport = (max(vw, 80), max(vh, 80))
+        if not app.fullscreen:
+            vh -= D.CHROME_H
+        app.viewport = ui.ViewSize.of(max(vw, 80), max(vh, 80))
+
+    def _on_resize(e) -> None:
+        set_initial_size(e.width, e.height)
+        _refresh_viewport(e.width, e.height)
+        sync_ui()
 
     def _install_handlers() -> None:
-        """仅挂载一次：页面级键盘与窗口尺寸事件。"""
         page.on_keyboard_event = lambda e: dispatch_ref.current(e)
         page.on_resize = lambda e: resize_ref.current(e)
         page.update()
-        # 启动后延迟重校准：page.width/height 在首个 resize 事件后才准确
         page.run_task(_calibrate_viewport)
 
     async def _calibrate_viewport() -> None:
-        """等一次真实 resize 事件拿到客户端尺寸后校准视口。
-
-        窗口在显示前已定好尺寸，首个 resize 事件通常紧随首帧到达；
-        拿到即停，不做无意义的长时间轮询（拿不到就按 page.width/height 兜底）。
-        """
-        for _ in range(8):                  # 最多约 2 秒
+        """等首个真实 resize 事件拿到客户端尺寸后校准（最多约 2 秒）。"""
+        for _ in range(8):
             if INITIAL_SIZE:
                 _refresh_viewport()
                 sync_ui()
@@ -873,473 +596,246 @@ def ImageViewerApp():
 
     dispatch_ref.current = _on_keyboard
     resize_ref.current = _on_resize
-    ft.use_effect(_install_handlers, [])
+    ui.use_effect(_install_handlers, [])
 
-    # 启动参数：自动打开指定文件/文件夹
+    # ── 启动参数 ───────────────────────────────────────────────────────
     def _startup_open() -> None:
         if START_PATH:
             page.run_task(_open_startup_path, START_PATH)
 
     async def _open_startup_path(path: str) -> None:
-        st = app.current
-        p = Path(path)
+        target = Path(path)
         try:
-            if p.is_dir():
+            if target.is_dir():
                 total = await asyncio.get_running_loop().run_in_executor(
-                    None, st.manager.scan_folder, p
+                    None, app.manager.scan_folder, target
                 )
                 if total == 0:
-                    toast("该文件夹中没有可显示的图片")
+                    notify("该文件夹中没有可显示的图片", tone="warning")
                     sync_ui()
                     return
-            elif not st.manager.open_path(p):
-                toast("无法打开该文件（不支持或已损坏）")
+            elif not app.manager.open_path(target):
+                notify("无法打开该文件（不支持或已损坏）", tone="warning")
                 sync_ui()
                 return
-            await _load_current_async(st)
+            await _load_current_async()
         finally:
-            set_startup_done(True)   # 无论成败都结束「启动留白」，交回占位提示
+            set_startup_done(True)
 
-    ft.use_effect(_startup_open, [])
+    ui.use_effect(_startup_open, [])
 
-    # ---------- 幻灯片 ----------
-
+    # ── 幻灯片 ─────────────────────────────────────────────────────────
     def _slideshow_effect() -> None:
-        st = app.current
-        if st.slideshow_on and (st.slideshow_task is None or st.slideshow_task.done()):
-            st.slideshow_task = page.run_task(_slideshow_loop)
-        elif not st.slideshow_on and st.slideshow_task is not None:
-            st.slideshow_task.cancel()
-            st.slideshow_task = None
+        if app.slideshow_on and (app.slideshow_task is None or app.slideshow_task.done()):
+            app.slideshow_task = page.run_task(_slideshow_loop)
+        elif not app.slideshow_on and app.slideshow_task is not None:
+            app.slideshow_task.cancel()
+            app.slideshow_task = None
 
-    ft.use_effect(_slideshow_effect, [app.current.slideshow_on])
+    ui.use_effect(_slideshow_effect, [slideshow_on])
 
     async def _slideshow_loop() -> None:
-        st = app.current
         try:
-            while st.slideshow_on:
-                await asyncio.sleep(st.interval)
-                if st.paused:
+            while app.slideshow_on:
+                await asyncio.sleep(app.interval)
+                if app.paused:
                     continue
                 await _goto(1)
         except asyncio.CancelledError:
             pass
         finally:
-            st.slideshow_task = None
+            app.slideshow_task = None
 
-    # ---------- 鼠标交互 ----------
-
-    def _on_scroll(e: ft.ScrollEvent) -> None:
-        """滚轮三段式：
-        1. Ctrl+滚轮：以鼠标位置为锚点缩放（向上放大、向下缩小）；
-        2. 图片完全可见：向上翻上一张、向下翻下一张；
-        3. 图片溢出视口：向上/向下滚动浏览图片区域（到边界即停，由 clamp 保证）。
-        Windows 实测滚轮上滚的 scroll_delta.y 为负值，故 dy<0 视为向上。
-        """
-        st = app.current
-        dy = e.scroll_delta.y
-        if dy == 0:
+    # ── 鼠标：滚轮 / 框选 / 平移 ───────────────────────────────────────
+    def _on_scroll(e) -> None:
+        """三种意图由 ui.scroll_intent 判定，回调只负责执行。"""
+        intent = ui.scroll_intent(
+            app.image_size, app.viewport, app.view, e.scroll_delta.y,
+            ctrl=app.ctrl_held or _ctrl_pressed(),
+        )
+        if intent.kind == "none":
             return
-        ctrl = st.ctrl_held or _ctrl_pressed()   # 修饰键状态以系统查询为准
-        w, h = img_wh
-        vw, vh = st.viewport
-        scale = _compute_scale(st.view, w, h, vw, vh)
-        if ctrl:
-            # Ctrl+滚轮：基于鼠标位置缩放
+        if intent.kind == "zoom":
             loc = e.local_position
-            cx = loc.x if loc is not None else vw / 2
-            cy = loc.y if loc is not None else vh / 2
-            _zoom_anchored(st.view, w, h, vw, vh, cx, cy,
-                           ZOOM_STEP if dy < 0 else 1 / ZOOM_STEP)
-            set_pan_xy((st.view.pan_x, st.view.pan_y))
+            anchor = ui.ViewPoint(
+                loc.x if loc is not None else app.viewport.width / 2,
+                loc.y if loc is not None else app.viewport.height / 2,
+            )
+            app.view = ui.zoom_anchored(
+                app.view, app.image_size, app.viewport, anchor, intent.factor
+            )
             sync_ui()
-        elif w * scale <= vw and h * scale <= vh:
-            # 图片完全在视野中：翻页（向上=上一张，向下=下一张）
-            page.run_task(_goto, -1 if dy < 0 else 1)
+        elif intent.kind == "page":
+            page.run_task(_goto, intent.direction)
         else:
-            # 图片溢出：滚动浏览（步长随滚轮幅度，边界处自动停止）
             _clear_selection()
-            step = max(60.0, vh * 0.12) * max(1.0, abs(dy) / 100.0)
-            st.view.pan_y += step if dy < 0 else -step
-            _clamp_pan(st.view, w, h, vw, vh, scale)
-            set_pan_xy((st.view.pan_x, st.view.pan_y))
-
-    # ---------- 鼠标拖拽：左键选区 / 右键平移 ----------
+            app.view = ui.ViewTransform(
+                app.view.mode, app.view.zoom,
+                app.view.pan_x,
+                app.view.pan_y + (intent.delta if intent.direction < 0 else -intent.delta),
+            )
+            app.view = ui.clamp_pan(app.view, app.image_size, app.viewport)
+            set_view(app.view)
+            set_render_tick(lambda tick: tick + 1)
 
     def _clear_selection() -> None:
-        """清除选区（同步 AppState 与 UI 状态）。"""
-        app.current.sel_rect = None
-        set_sel_rect_state(None)
+        app.sel_rect = None
+        set_selection(None)
 
-    def _zoom_to_region(sel: tuple[float, float, float, float]) -> None:
-        """把选区对应的图片区域放大到填满视野（保持宽高比）。"""
-        st = app.current
-        w, h = img_wh
-        vw, vh = st.viewport
-        if w <= 0 or vw <= 0:
+    def _zoom_to_region(region: ui.ViewRect) -> None:
+        next_view = ui.zoom_to_region(
+            app.view, app.image_size, app.viewport, region
+        )
+        if next_view == app.view:
             return
-        x0, y0, x1, y1 = sel
-        left, top = min(x0, x1), min(y0, y1)
-        sw, sh = abs(x1 - x0), abs(y1 - y0)
-        if sw < 4 or sh < 4:                  # 忽略过小的“选区”
-            return
-        s0 = _compute_scale(st.view, w, h, vw, vh)
-        img_left = (vw - w * s0) / 2 + st.view.pan_x   # 当前图片左上角（视口坐标）
-        img_top = (vh - h * s0) / 2 + st.view.pan_y
-        # 选区对应的图片像素区域
-        ix0 = (left - img_left) / s0
-        iy0 = (top - img_top) / s0
-        iw_sel, ih_sel = sw / s0, sh / s0
-        s1 = max(MIN_ZOOM, min(MAX_ZOOM, min(vw / iw_sel, vh / ih_sel)))
-        st.view.mode = "custom"
-        st.view.zoom = s1
-        # 选区中心对准视野中心
-        cx, cy = ix0 + iw_sel / 2, iy0 + ih_sel / 2
-        st.view.pan_x = vw / 2 - cx * s1 - (vw - w * s1) / 2
-        st.view.pan_y = vh / 2 - cy * s1 - (vh - h * s1) / 2
-        _clamp_pan(st.view, w, h, vw, vh, s1)
+        app.view = next_view
         _clear_selection()
-        set_pan_xy((st.view.pan_x, st.view.pan_y))
         sync_ui()
 
-    def _on_tap(e: ft.TapEvent) -> None:
-        """单击：选区已存在且点击落在区内 -> 放大选区；否则取消选区。"""
-        st = app.current
-        sel = st.sel_rect
-        if sel is None:
+    def _on_tap(e) -> None:
+        region = app.sel_rect
+        if region is None or e.local_position is None:
             return
-        pos = e.local_position
-        if pos is None:
-            return
-        x0, y0, x1, y1 = sel
-        if min(x0, x1) <= pos.x <= max(x0, x1) and min(y0, y1) <= pos.y <= max(y0, y1):
-            _zoom_to_region(sel)
+        point = ui.ViewPoint(e.local_position.x, e.local_position.y)
+        if region.contains(point):
+            _zoom_to_region(region)
         else:
             _clear_selection()
 
-    def _on_pan_start(e: ft.DragStartEvent) -> None:
-        """左键拖拽开始：创建新选区。"""
-        st = app.current
+    def _on_pan_start(e) -> None:
         _clear_selection()
         if e.local_position is not None:
-            st.sel_drag_start = (e.local_position.x, e.local_position.y)
-            st.sel_rect = (e.local_position.x, e.local_position.y) * 2
-            set_sel_rect_state(st.sel_rect)
+            x, y = e.local_position.x, e.local_position.y
+            app.sel_drag_start = (x, y)
+            app.sel_rect = ui.ViewRect.from_corners(x, y, x, y)
+            set_selection(app.sel_rect)
 
-    def _on_pan_update(e: ft.DragUpdateEvent) -> None:
-        """左键拖拽中：更新选区矩形。"""
-        st = app.current
-        if st.sel_drag_start is None or e.local_position is None:
+    def _on_pan_update(e) -> None:
+        if app.sel_drag_start is None or e.local_position is None:
             return
-        x0, y0 = st.sel_drag_start
-        st.sel_rect = (x0, y0, e.local_position.x, e.local_position.y)
-        set_sel_rect_state(st.sel_rect)
+        x0, y0 = app.sel_drag_start
+        app.sel_rect = ui.ViewRect.from_corners(x0, y0, e.local_position.x, e.local_position.y)
+        set_selection(app.sel_rect)
 
-    def _on_pan_end(_e: ft.DragEndEvent) -> None:
-        """左键拖拽结束：保留选区，等待区内单击放大。"""
-        app.current.sel_drag_start = None
+    def _on_pan_end(_e) -> None:
+        app.sel_drag_start = None
 
     def _on_right_pan_start(e) -> None:
-        """右键拖拽开始：记录起点，平移前清除选区。"""
-        st = app.current
         _clear_selection()
-        st.right_last = (
+        app.right_last = (
             (e.local_position.x, e.local_position.y) if e.local_position is not None else None
         )
 
     def _on_right_pan_update(e) -> None:
-        """右键拖拽：滚动图片（带边界限制）。"""
-        st = app.current
-        if e.local_position is None or st.right_last is None:
+        if e.local_position is None or app.right_last is None:
             return
         lx, ly = e.local_position.x, e.local_position.y
-        st.view.pan_x += lx - st.right_last[0]
-        st.view.pan_y += ly - st.right_last[1]
-        st.right_last = (lx, ly)
-        w, h = img_wh
-        scale = _compute_scale(st.view, w, h, *st.viewport)
-        _clamp_pan(st.view, w, h, *st.viewport, scale)
-        set_pan_xy((st.view.pan_x, st.view.pan_y))
+        app.view = ui.ViewTransform(
+            app.view.mode, app.view.zoom,
+            app.view.pan_x + lx - app.right_last[0],
+            app.view.pan_y + ly - app.right_last[1],
+        )
+        app.right_last = (lx, ly)
+        app.view = ui.clamp_pan(app.view, app.image_size, app.viewport)
+        set_view(app.view)
+        set_render_tick(lambda tick: tick + 1)
 
     def _on_right_pan_end(_e) -> None:
-        app.current.right_last = None
+        app.right_last = None
 
     def _on_double_tap(_e) -> None:
-        """双击：切换全屏（全屏下双击即退出）。"""
         page.run_task(act_fullscreen)
 
-    # ---------- 界面构建 ----------
-
-    def _image_area() -> ft.Control:
-        """图片浏览区：无图时显示占位提示。"""
-        st = app.current
-        if img_src is None:
-            if not startup_done:
-                # 启动参数正在解码：不画提示，避免提示文案一闪而过
-                return ft.Container(expand=True, bgcolor=BG_COLOR)
-            return ft.Container(
-                expand=True,
-                bgcolor=BG_COLOR,
-                alignment=ft.Alignment.CENTER,
-                content=ft.Column(
-                    horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-                    spacing=12,
-                    controls=[
-                        ft.Icon(ft.Icons.IMAGE, size=56, color=FG_DIM),
-                        ft.Text("Ctrl+O 打开图片　·　Ctrl+Shift+O 打开文件夹", size=13, color=FG_DIM),
-                    ],
-                ),
-            )
-        vw, vh = st.viewport
-        w, h = img_wh
-        scale = _compute_scale(st.view, w, h, vw, vh)
-        disp_w = max(w * scale, 1.0)
-        disp_h = max(h * scale, 1.0)
-        pan_x, pan_y = pan_xy
-        left = (vw - disp_w) / 2 + pan_x
-        top = (vh - disp_h) / 2 + pan_y
-        overlay = []
-        sel = sel_rect_state
-        if sel is not None:
-            x0, y0, x1, y1 = sel
-            overlay = [ft.Container(
-                left=min(x0, x1),
-                top=min(y0, y1),
-                width=max(abs(x1 - x0), 1.0),
-                height=max(abs(y1 - y0), 1.0),
-                border=ft.Border.all(1.5, ft.Colors.BLUE_400),
-                bgcolor=ft.Colors.WHITE_24,     # 半透明填充，提升选区可见性
-            )]
-        # 浮层翻页箭头：只有一张图时没有「上一张/下一张」可去，直接不画
-        nav: list[ft.Control] = []
-        if len(st.manager.files) > 1:
-            # 全屏时按钮离屏幕边缘再留远一点：贴边太近既不好点，也显得局促
-            margin = NAV_MARGIN * 1.8 if st.fullscreen else NAV_MARGIN
-            nav_top = max((vh - NAV_SIZE) / 2, 8.0)
-            nav = [
-                _nav_button(
-                    ft.Icons.CHEVRON_LEFT,
-                    margin, nav_top, lambda _e: _nav_click(-1),
-                ),
-                _nav_button(
-                    ft.Icons.CHEVRON_RIGHT,
-                    max(vw - margin - NAV_SIZE, margin), nav_top,
-                    lambda _e: _nav_click(1),
-                ),
-            ]
-        return ft.Stack(
-            expand=True,
-            clip_behavior=ft.ClipBehavior.HARD_EDGE,
-            controls=[
-                ft.Container(expand=True, bgcolor=BG_COLOR),
-                ft.Image(
-                    src=img_src,
-                    width=disp_w,
-                    height=disp_h,
-                    fit=ft.BoxFit.FILL,
-                    left=left,
-                    top=top,
-                    gapless_playback=True,      # 切换图片时无闪烁
-                ),
-                *overlay,
-                *nav,                           # 箭头压在选区之上：始终可点
-            ],
+    # ── 对话框 ─────────────────────────────────────────────────────────
+    ui.use_dialog(
+        confirm_dialog(
+            heading="删除图片",
+            message=f"确定将「{status.name}」移至回收站吗？",
+            confirm_label="删除",
+            on_confirm=confirm_delete,
+            on_cancel=lambda _e: set_show_delete(False),
+            danger=True,
         )
-
-    def _menu_item(text: str, action, icon: ft.IconData | None = None, shortcut: str = "") -> ft.MenuItemButton:
-        return ft.MenuItemButton(
-            content=ft.Text(f"{text}  {shortcut}" if shortcut else text, size=13),
-            leading=ft.Icon(icon, size=16) if icon else None,
-            on_click=action,
+        if show_delete else None
+    )
+    ui.use_dialog(
+        info_dialog(
+            heading="文件关联状态",
+            message=assoc_status or "",
+            on_close=lambda _e: set_assoc_status(None),
         )
-
-    file_menu = ft.SubmenuButton(
-        content=ft.Text("文件", size=13),
-        controls=[
-            _menu_item("打开图片", act_open_file, ft.Icons.IMAGE, "Ctrl+O"),
-            _menu_item("打开文件夹", act_open_folder, ft.Icons.FOLDER_OPEN, "Ctrl+Shift+O"),
-            _menu_item("在新窗口打开", act_open_new_window, ft.Icons.OPEN_IN_NEW, "Ctrl+N"),
-            ft.SubmenuButton(
-                content=ft.Text("文件关联", size=13),
-                controls=[
-                    _menu_item("注册为图片打开方式", act_file_assoc_install, ft.Icons.LINK),
-                    _menu_item("取消文件关联", act_file_assoc_uninstall, ft.Icons.LINK_OFF),
-                    _menu_item("查看关联状态", act_file_assoc_status, ft.Icons.INFO_OUTLINE),
-                ],
-            ),
-            _menu_item("停止播放" if slideshow_on else "幻灯片播放", act_slideshow, ft.Icons.SLIDESHOW, "S"),
-            _menu_item("继续" if paused else "暂停", act_pause, ft.Icons.PAUSE_CIRCLE, "P"),
-            ft.SubmenuButton(
-                content=ft.Text("播放间隔", size=13),
-                controls=[
-                    _menu_item(f"{sec} 秒", lambda _e, s=sec: set_interval(s))
-                    for sec in SLIDESHOW_INTERVALS
-                ],
-            ),
-            _menu_item("导出当前帧…", act_export_frame, ft.Icons.SAVE_ALT, "Ctrl+E"),
-            _menu_item("退出", act_exit, ft.Icons.CLOSE, "Esc"),
-        ],
+        if assoc_status is not None else None
     )
-
-    play_menu = ft.SubmenuButton(
-        content=ft.Text("播放", size=13),
-        controls=[
-            _menu_item(
-                "继续动画" if anim_playing and anim_paused
-                else ("暂停动画" if anim_playing else "播放动画"),
-                act_anim_toggle,
-                ft.Icons.PAUSE_CIRCLE if anim_playing else ft.Icons.PLAY_ARROW,
-                "A",
-            ),
-            _menu_item("上一帧", act_frame_prev, ft.Icons.SKIP_PREVIOUS, "["),
-            _menu_item("下一帧", act_frame_next, ft.Icons.SKIP_NEXT, "]"),
-        ],
-    )
-
-    edit_menu = ft.SubmenuButton(
-        content=ft.Text("编辑", size=13),
-        controls=[
-            _menu_item("顺时针旋转 90°", act_rotate_cw, ft.Icons.ROTATE_90_DEGREES_CW, "R"),
-            _menu_item("逆时针旋转 90°", act_rotate_ccw, ft.Icons.ROTATE_90_DEGREES_CCW, "L"),
-            _menu_item("水平翻转", act_flip_h, ft.Icons.FLIP, "H"),
-            _menu_item("垂直翻转", act_flip_v, ft.Icons.FLIP, "V"),
-            _menu_item("删除当前图片", act_delete, ft.Icons.DELETE_OUTLINE, "Del"),
-        ],
-    )
-
-    view_menu = ft.SubmenuButton(
-        content=ft.Text("视图", size=13),
-        controls=[
-            _menu_item("适应窗口", act_fit_window, ft.Icons.FIT_SCREEN, "Ctrl+0"),
-            _menu_item("适应宽度", act_fit_width, ft.Icons.WIDTH_WIDE),
-            _menu_item("1:1 原始大小", act_actual_size, ft.Icons.PHOTO_SIZE_SELECT_ACTUAL, "Ctrl+1"),
-            _menu_item("放大", act_zoom_in, ft.Icons.ZOOM_IN, "+"),
-            _menu_item("缩小", act_zoom_out, ft.Icons.ZOOM_OUT, "-"),
-            _menu_item("全屏", act_fullscreen, ft.Icons.FULLSCREEN, "F"),
-            _menu_item("共享缓存状态…", act_service_status, ft.Icons.MEMORY),
-        ],
-    )
-
-    # 删除确认弹窗
-    ft.use_dialog(
-        ft.AlertDialog(
-            modal=False,
-            title=ft.Text("删除图片"),
-            content=ft.Text(f"确定将「{file_name}」移至回收站吗？"),
-            actions=[
-                ft.Button("删除", on_click=confirm_delete),
-                ft.TextButton("取消", on_click=lambda _e: set_show_delete(False)),
-            ],
-            on_dismiss=lambda _e: set_show_delete(False),
-        )
-        if show_delete
-        else None
-    )
-
-    ft.use_dialog(
-        ft.AlertDialog(
-            modal=True,
-            title=ft.Text("文件关联状态"),
-            content=ft.Text(assoc_status or ""),
-            actions=[
-                ft.TextButton("关闭", on_click=lambda _e: set_assoc_status(None)),
-            ],
-        )
-        if assoc_status is not None
-        else None
-    )
-
-    ft.use_dialog(
-        ft.AlertDialog(
-            modal=True,
-            title=ft.Text("文件关联"),
-            content=ft.Text(
-                "将 ImageViewer 注册到 Windows 图片文件的“打开方式”和右键菜单。"
+    ui.use_dialog(
+        confirm_dialog(
+            heading="文件关联",
+            message=(
+                "将 ImageViewer 注册到 Windows 图片文件的「打开方式」和右键菜单。"
                 if assoc_action == "install"
                 else "将撤销 ImageViewer 写入的文件关联和右键菜单。"
             ),
-            actions=[
-                ft.Button(
-                    "注册" if assoc_action == "install" else "取消关联",
-                    on_click=lambda _e: page.run_task(_run_file_assoc, assoc_action),
-                ),
-                ft.TextButton("取消", on_click=lambda _e: set_assoc_action(None)),
-            ],
-        )
-        if assoc_action
-        else None
-    )
-    ft.use_dialog(
-        ft.AlertDialog(
+            confirm_label="注册" if assoc_action == "install" else "取消关联",
+            on_confirm=lambda _e: page.run_task(_run_assoc, assoc_action),
+            on_cancel=lambda _e: set_assoc_action(None),
             modal=True,
-            title=ft.Text("共享缓存状态"),
-            content=ft.Text(_format_service_info(service_info), size=12.5, selectable=True),
-            actions=[
-                ft.TextButton("关闭", on_click=lambda _e: set_service_info(None)),
-            ],
         )
-        if service_info is not None
-        else None
+        if assoc_action else None
     )
-    ft.use_dialog(snack)
-
-    # 注意：0.86.x 中 Column 内 expand 子控件之后的固定高度兄弟控件不渲染，
-    # 因此整体采用 Stack 绝对定位布局（菜单/状态栏/图片区互不干扰）。
-    def _menu_bar() -> ft.Container:
-        return ft.Container(
-            height=MENU_H,
-            bgcolor=PANEL_COLOR,
-            border=ft.Border(bottom=ft.BorderSide(1, PANEL_BORDER)),
-            alignment=ft.Alignment.CENTER_LEFT,
-            padding=ft.Padding.symmetric(horizontal=4),
-            content=ft.MenuBar(controls=[file_menu, play_menu, edit_menu, view_menu]),
+    ui.use_dialog(
+        info_dialog(
+            heading="共享缓存状态",
+            message=format_service_info(service_info),
+            on_close=lambda _e: set_service_info(None),
+            selectable=True,
         )
+        if service_info is not None else None
+    )
 
-    def _status_bar() -> ft.Container:
-        return ft.Container(
-            height=STATUS_H,
-            bgcolor=PANEL_COLOR,
-            border=ft.Border(top=ft.BorderSide(1, PANEL_BORDER)),
-            padding=ft.Padding.symmetric(horizontal=12),
-            content=ft.Row(
-                expand=True,
-                vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                controls=[
-                    ft.Text(file_name, size=12, color=FG_COLOR, expand=1,
-                            max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
-                    ft.Text(info_text, size=12, color=FG_DIM, expand=1,
-                            text_align=ft.TextAlign.CENTER),
-                    ft.Text(page_text, size=12, color=FG_COLOR, expand=1,
-                            text_align=ft.TextAlign.END),
-                ],
-            ),
-        )
+    # ── 界面装配 ───────────────────────────────────────────────────────
+    menu_ctx = MenuContext(
+        slideshow_on=slideshow_on,
+        paused=paused,
+        interval=app.interval,
+        anim_playing=anim_playing,
+        anim_paused=anim_paused,
+        has_frames=app.manager.frame_count() > 1,
+        has_image=status.has_image,
+    )
+    menu_bar = build_menu_bar(build_sections(menu_ctx), _on_menu_action)
+    status_bar = build_status_bar(status)
 
-    # 布局说明：0.86.x 的 expand 与 Stack 定位存在缺陷（expand 子控件会吞掉
-    # 后续兄弟的空间、Stack 的 bottom/right 定位失效），因此这里全部使用
-    # 显式高度：菜单 48 + 图片区(客户端高度-80) + 状态栏 32，总和恰为窗口高度。
-    ph = (INITIAL_SIZE[1] if INITIAL_SIZE else (page.height or 600)) or 600
-    image_h = ph if fullscreen else max(ph - MENU_H - STATUS_H, 80)
-    image_view = ft.GestureDetector(
+    # 布局沿用显式高度：Column 内 expand 子控件会吞掉后续兄弟空间，
+    # 因此菜单 / 图片区 / 状态栏三段高度之和恰为窗口高度。
+    page_h = (INITIAL_SIZE[1] if INITIAL_SIZE else (page.height or 600)) or 600
+    image_h = page_h if fullscreen else max(page_h - D.CHROME_H, 80)
+    canvas = build_canvas(
+        src=img_src,
+        image_size=image_size,
+        viewport=app.viewport,
+        view=view,
+        selection=selection,
         height=image_h,
-        expand=fullscreen,                  # 全屏时占满整窗
-        drag_interval=16,                   # 节流拖动事件，保证流畅
-        on_tap_down=_on_tap_down,           # 点击时恢复键盘焦点
-        on_tap=_on_tap,                     # 区内单击放大选区 / 区外单击取消
-        on_pan_start=_on_pan_start,         # 左键拖拽：选区
-        on_pan_update=_on_pan_update,
-        on_pan_end=_on_pan_end,
-        on_right_pan_start=_on_right_pan_start,   # 右键拖拽：滚动图片
-        on_right_pan_update=_on_right_pan_update,
-        on_right_pan_end=_on_right_pan_end,
-        on_scroll=_on_scroll,
-        on_double_tap=_on_double_tap,
-        content=_image_area(),
+        fullscreen=fullscreen,
+        show_nav=len(app.manager.files) > 1,
+        placeholder=None if not startup_done else empty_stage(),
+        handlers=CanvasHandlers(
+            on_tap_down=_on_tap_down,
+            on_tap=_on_tap,
+            on_pan_start=_on_pan_start,
+            on_pan_update=_on_pan_update,
+            on_pan_end=_on_pan_end,
+            on_right_pan_start=_on_right_pan_start,
+            on_right_pan_update=_on_right_pan_update,
+            on_right_pan_end=_on_right_pan_end,
+            on_scroll=_on_scroll,
+            on_double_tap=_on_double_tap,
+            on_prev=lambda _e: _nav_click(-1),
+            on_next=lambda _e: _nav_click(1),
+        ),
     )
-    controls = [image_view] if fullscreen else [_menu_bar(), image_view, _status_bar()]
-    root = ft.Column(expand=True, spacing=0, controls=controls)
-    # 用 KeyboardListener 接收 Ctrl 键按下/抬起（焦点丢失时由 _ctrl_pressed 兜底）
-    kb_listener_ref.current = ft.KeyboardListener(
+    controls = [canvas] if fullscreen else [menu_bar, canvas, status_bar]
+    root = ui.Column(expand=True, spacing=0, controls=controls)
+    kb_listener_ref.current = ui.KeyboardListener(
         content=root,
         autofocus=True,
         on_key_down=_on_key_down,
