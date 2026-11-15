@@ -91,7 +91,7 @@ flet build windows --python-version 3.12      # 产物在 build/windows/
 | `[tool.flet.compile] app = true` | 打包时把 `main.py` / `imageviewer/**/*.py` 预编译成 `.pyc`，内嵌解释器启动更快 |
 
 启动屏 `bgcolor` 必须与 `imageviewer/view/design.py` 的 `C_SURFACE` 一致（当前 `#141518`，
-由 `MediaPalette.derive()` 推导）。静态 TOML 无法 import 运行时色表，
+由 `ui.core.palette.build_scheme()` 推导）。静态 TOML 无法 import 运行时色板，
 由 `tools/layered_smoke.py` 的「启动屏底色 = 窗口底色」断言守住，换品牌色时同步改。
 
 `main.py` 的启动顺序是「先布置、后显示」：构建 UI 树 → 一次性下发窗口尺寸/最小尺寸/
@@ -329,7 +329,7 @@ Python 才会真正启动。`main.py` 按 `env → 请求文件 → argv` 顺序
 
 | cs-ui 能力 | 用途 |
 | --- | --- |
-| `ui.core.tokens` / `ui.MediaPalette` | 设计令牌与配色引擎；`imageviewer/view/design.py` 的唯一色值输入 |
+| `ui.core.tokens` / `ui.core.palette` | 设计令牌与配色引擎（`build_scheme` 出整套 M3 色板）；`imageviewer/view/design.py` 的唯一色值输入 |
 | `ui.MenuBar` / `MenuAction` / `MenuSection` | 数据驱动的桌面下拉菜单栏，快捷键用 `ui.Kbd` 键帽呈现；`shortcut_map()` / `validate_sections()` 可查询可断言 |
 | `ui.StatusBar(center=...)` | 三段式状态栏（在原两段式上扩展，旧用法向后兼容） |
 

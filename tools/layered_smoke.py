@@ -738,8 +738,7 @@ def check_view() -> None:
     design_shot = design.snapshot()
     check("设计快照含色表", len(design_shot["colors"]) >= 10)
     check("色表可由品牌色复算",
-          ui.MediaPalette.derive(design.BRAND_PRIMARY, mode=design.MODE).as_dict()
-          == design_shot["colors"])
+          design.build_scheme(design.BRAND_PRIMARY, design.MODE) == design_shot["colors"])
     check("布局高度落在 4px 网格",
           design.MENU_H % 4 == 0 and design.STATUS_H % 4 == 0)
     check("chrome 高度等于两段之和", design.CHROME_H == design.MENU_H + design.STATUS_H)

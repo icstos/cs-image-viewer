@@ -1,12 +1,12 @@
 """设计层 —— cs-ui 令牌在 ImageViewer 里的**唯一语义投影**。
 
-这里不定义任何颜色、字号、间距或圆角：色表由 :class:`ui.MediaPalette` 从品牌色
-与明暗档推导，排印 / 图标 / 4px 网格全部取自 ``ui.core.tokens``。本模块只做两件
-事：
+这里不定义任何颜色、字号、间距或圆角：色板由 :func:`ui.core.palette.build_scheme`
+从品牌色与明暗档推导，排印 / 图标 / 4px 网格全部取自 ``ui.core.tokens``。本模块只
+做两件事：
 
-1. 声明这个产品唯一的自选输入（品牌色 + 固定深色档），交给 ``MediaPalette.derive``
-   算出整套色表；
-2. 把色表与令牌投影成业务侧读得懂的名字（``C_CANVAS`` / ``MENU_H`` …）。
+1. 声明这个产品唯一的自选输入（品牌色 + 固定深色档），交给色板引擎算出整套
+   Material 3 色板；
+2. 把色板与令牌投影成业务侧读得懂的名字（``C_CANVAS`` / ``MENU_H`` …）。
 
 于是「换配色」只改一个常量；「查当前配色」读 :func:`snapshot`；「核对某个间距
 有没有越界」对照 ``SPACE`` 即可 —— 用户看到的效果、开发者读的代码、Agent 检索
@@ -19,8 +19,8 @@ from __future__ import annotations
 
 import ui
 from ui import FONT_SIZE, ICON_SIZE, RADIUS, SPACE
+from ui.core.palette import build_scheme
 from ui.core.tokens import PRIMARY_SEEDS
-from ui.display.media import MediaPalette
 
 from ..models import geometry as G
 
@@ -29,21 +29,24 @@ from ..models import geometry as G
 BRAND_PRIMARY: str = PRIMARY_SEEDS["blue"]
 #: 看图软件固定深色（画面是内容，浅色边框会抢注意力）。
 MODE: str = "dark"
-#: 14 个语义角色，由品牌色 + 明暗档唯一决定，带缓存、可复算。
-PALETTE = MediaPalette.derive(BRAND_PRIMARY, mode=MODE)
+#: 整套 M3 色板（``dict[str, str]``）：品牌色 + 明暗档唯一决定，可打印可复算。
+#: 只取色值、不装配 ``ui.Theme`` —— 装配是 ``main.py`` 的事，设计层保持纯数据。
+SCHEME: dict[str, str] = build_scheme(BRAND_PRIMARY, MODE)
 
 # ─── 表面：由深到浅，四级梯度 ────────────────────────────────────────────
-C_CANVAS = PALETTE.darkest         # 图片区（最沉浸的一层）
-C_SURFACE = PALETTE.surface        # 窗口底衬：任何漏画帧露出的都是深色
-C_PANEL = PALETTE.panel            # 菜单栏 / 状态栏 / 弹窗
-C_DIVIDER = PALETTE.divider        # 菜单内分隔线
-C_LINE = PALETTE.border            # 面板描边
+# 全部取 ``surface_container`` 梯度而不是 ``outline``：1px 描边在暗色下若用
+# outline（亮灰 #7A7C7F）会盖过内容，表面梯度差一档刚好「看得见、不抢戏」。
+C_CANVAS = SCHEME["surface_container_lowest"]   # 图片区（最沉浸的一层）
+C_SURFACE = SCHEME["surface"]                   # 窗口底衬：任何漏画帧露出的都是深色
+C_PANEL = SCHEME["surface_container_low"]       # 菜单栏 / 状态栏 / 弹窗
+C_DIVIDER = SCHEME["surface_container"]         # 菜单内分隔线
+C_LINE = SCHEME["surface_container_high"]       # 面板描边
 
 # ─── 文字：三档视觉重量 ──────────────────────────────────────────────────
-C_TEXT = PALETTE.text
-C_MUTED = PALETTE.muted
+C_TEXT = SCHEME["on_surface"]
+C_MUTED = SCHEME["on_surface_variant"]
 C_DIM = ui.Colors.with_opacity(0.62, C_TEXT)   # 空态图标 / 极次要说明
-C_PRIMARY = PALETTE.primary                    # 选中态 / 框选描边
+C_PRIMARY = SCHEME["primary"]                  # 选中态 / 框选描边
 
 # ─── 媒体浮层：压在图片上的固定色，**不随明暗档变化** ────────────────────
 # 它压在任意图像上 —— 可能是纯白照片，也可能是纯黑夜景。跟着主题变成白底或
@@ -99,7 +102,7 @@ def snapshot() -> dict[str, object]:
     return {
         "brand": BRAND_PRIMARY,
         "mode": MODE,
-        "colors": PALETTE.as_dict(),
+        "colors": dict(SCHEME),
         "derived": {
             "canvas": C_CANVAS,
             "surface": C_SURFACE,
