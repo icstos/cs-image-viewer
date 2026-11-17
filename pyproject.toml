@@ -34,12 +34,17 @@ imageviewer-assoc = "imageviewer.infra.association:main"   # Windows“打开方
 imageviewer-daemon = "imageviewer.infra.shared.daemon:main"  # 常驻共享缓存（无窗口）
 
 [tool.setuptools]
-# 只有 main.py 是顶层模块；其余代码都在 imageviewer 包内分层组织。
+# src 布局：包位于 src/imageviewer/，main.py 仍在仓库根（flet build 的入口，
+# 组合根，不能挪进 src）。空串键把顶层模块留在根，只把 imageviewer 映射到 src；
+# 子包（models / infra / ...）由 packages.find 自动发现，新增分层免维护。
+# 不能写成 package-dir = { "" = "src" }：那样 main.py 会被静默漏出 wheel /
+# editable 映射，控制台脚本 imageviewer = "main:run" 随即失效。
 py-modules = ["main"]
+package-dir = { "" = ".", "imageviewer" = "src/imageviewer" }
 
 [tool.setuptools.packages.find]
-# 五层（models / infra / service / viewmodel / view）与它们的子包一网打尽，
-# 新增分层目录时不必再回来改这份列表。
+# 从 src 发现 imageviewer 及其全部子包（含新增分层）。
+where = ["src"]
 include = ["imageviewer*"]
 
 # ---------------------------------------------------------------------------

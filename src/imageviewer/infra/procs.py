@@ -64,10 +64,12 @@ def app_root() -> Path:
 def main_script() -> Path:
     """应用代码目录（开发态 = 仓库根；打包态 = `<root>/app`）。
 
-    本文件在 ``imageviewer/infra/procs.py``，所以要往上三层：
-    parents[0]=infra、[1]=imageviewer、[2]=仓库根/<root>/app。
+    路径统一由 ``_paths.repo_root()`` 给出：src 布局下本文件多了一层
+    ``src/``，按 ``__file__`` 数层会静默指到 ``src/`` 而非仓库根。
     """
-    return Path(__file__).resolve().parents[2]
+    from .._paths import repo_root
+
+    return repo_root()
 
 
 def python_exe() -> str | None:
@@ -220,13 +222,24 @@ def launch_window(path: str | os.PathLike | None = None) -> bool:
 def daemon_command(py: str) -> tuple[list[str], str]:
     """构造「无窗口主进程」的启动命令，返回 (argv, cwd)。
 
-    开发态：`python -m imageviewer.infra.shared.daemon`（cwd = 仓库根）。
+    开发态：用当前解释器跑一段引导代码把 ``src/`` 加进 sys.path 再启动 daemon
+    （cwd = 仓库根）。子进程不继承父进程的 sys.path，所以不能用 ``-m``。
     打包态：用应用目录里的 python.exe 跑一段引导代码 —— 产物里的模块是 .pyc，
     路径要显式塞进 sys.path（app/ 是应用代码，site-packages/ 是第三方依赖）。
     用 `-E -s` 隔离外部 PYTHONPATH / 用户 site，保证加载的就是本包内的东西。
     """
     if python_exe():
-        return [py, "-m", "imageviewer.infra.shared.daemon"], str(main_script())
+        # src 布局：子进程不继承父进程在 main.py 里插入的 sys.path，直接用
+        # `-m imageviewer...` 在未做 editable install 的开发态会找不到包。
+        # 显式把 src/ 加进子进程路径，功能与安装态完全一致。
+        src_dir = main_script() / "src"
+        code = (
+            "import sys;"
+            f"sys.path.insert(0, {str(src_dir)!r});"
+            "from imageviewer.infra.shared.daemon import main;"
+            "raise SystemExit(main())"
+        )
+        return [py, "-c", code], str(main_script())
     root = Path(py).resolve().parent
     app_dir = main_script()
     site = root / "site-packages"

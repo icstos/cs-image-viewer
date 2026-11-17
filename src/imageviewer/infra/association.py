@@ -63,6 +63,8 @@ import sys
 from pathlib import Path
 from string import Template
 
+from .._paths import repo_root
+
 # ---------------------------------------------------------------------------
 # 常量
 # ---------------------------------------------------------------------------
@@ -248,7 +250,7 @@ def resolve_exe(explicit: str | None = None) -> Path:
             raise SystemExit(f"找不到可执行文件：{exe}")
         return exe.resolve()
 
-    repo = Path(__file__).resolve().parent.parent
+    repo = repo_root()
     roots = [repo / "build" / "windows", repo / "dist", repo / "build"]
     tried: list[Path] = []
 
@@ -652,7 +654,7 @@ def uninstall(remove_launcher: bool = True, verbose: bool = True) -> None:
             removed.append(rf"HKCU\{verb_path}")
 
     if remove_launcher:
-        repo = Path(__file__).resolve().parent.parent
+        repo = repo_root()
         # 稳定目录 + 旧版本曾写过的产物目录，一并清理
         for d in {default_launcher_dir(), repo / "build" / "windows", repo / "dist"}:
             for name in (LAUNCHER_VBS, LAUNCHER_CMD, EXE_CONFIG):

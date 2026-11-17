@@ -29,7 +29,9 @@ from collections.abc import Sequence
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+SRC = ROOT / "src"                       # src 布局：包位于 src/imageviewer/
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(SRC))
 
 #: 真实存在（内容无关）的图片占位目录：``Gallery`` 会做 ``is_file()`` 与后缀校验，
 #: 因此断言需要真路径，但解码全部由假 provider 接管 —— 不产生任何耗时。
@@ -255,7 +257,9 @@ def _resolve_import(node: ast.ImportFrom, package: list[str]) -> str:
 
 def _imported_modules(path: Path) -> set[str]:
     """一个文件里所有绝对模块名（相对导入已还原）。"""
-    rel = path.relative_to(ROOT).with_suffix("")
+    # 包内文件相对 src/（还原出 imageviewer.*），根 main.py 相对仓库根。
+    base = SRC if path.is_relative_to(SRC) else ROOT
+    rel = path.relative_to(base).with_suffix("")
     package = list(rel.parts[:-1])
     modules: set[str] = set()
     tree = ast.parse(path.read_text(encoding="utf-8"))
@@ -271,8 +275,8 @@ def check_layers() -> None:
     section("依赖方向（五层单向）")
     violations: list[str] = []
     flet_imports: list[str] = []
-    for path in sorted((ROOT / PACKAGE).rglob("*.py")):
-        layer = path.relative_to(ROOT / PACKAGE).parts[0]
+    for path in sorted((SRC / PACKAGE).rglob("*.py")):
+        layer = path.relative_to(SRC / PACKAGE).parts[0]
         if layer not in LAYER_RULES:
             continue
         for module in _imported_modules(path):
@@ -289,13 +293,13 @@ def check_layers() -> None:
             if target not in LAYER_RULES:
                 continue                              # 非分层模块（如 __init__ 常量）
             if target != layer and target not in LAYER_RULES[layer]:
-                violations.append(f"{path.relative_to(ROOT)} → {module}")
+                violations.append(f"{path.relative_to(SRC)} → {module}")
     check("层间不存在反向/跨层依赖", not violations, "; ".join(violations[:6]))
     check("包内不直接 import flet", not flet_imports, "; ".join(flet_imports[:6]))
 
     models_imports = {
         module.split(".")[0]
-        for path in (ROOT / PACKAGE / "models").rglob("*.py")
+        for path in (SRC / PACKAGE / "models").rglob("*.py")
         for module in _imported_modules(path)
     }
     check("models 只依赖标准库",
@@ -770,13 +774,17 @@ def check_wiring() -> None:
           and scripts["imageviewer-daemon"] == "imageviewer.infra.shared.daemon:main",
           str(scripts))
 
-    # 每个分层子包都必须能被 setuptools 找到（否则打包后 import 失败）
-    check("分层包声明完整",
-          data["tool"]["setuptools"]["packages"]["find"]["include"] == ["imageviewer*"],
-          str(data["tool"]["setuptools"]))
+    # src 布局：包必须在 src/ 下被发现，同时根 main.py 不能被 package-dir 漏掉
+    setuptools_cfg = data["tool"]["setuptools"]
+    check("src 布局声明完整",
+          setuptools_cfg.get("package-dir") == {"": ".", "imageviewer": "src/imageviewer"}
+          and setuptools_cfg.get("py-modules") == ["main"]
+          and setuptools_cfg["packages"]["find"]["where"] == ["src"]
+          and setuptools_cfg["packages"]["find"]["include"] == ["imageviewer*"],
+          str(setuptools_cfg))
     layers = ("models", "infra", "service", "viewmodel", "view")
     check("五个分层目录都存在",
-          all((ROOT / "imageviewer" / layer).is_dir() for layer in layers))
+          all((SRC / PACKAGE / layer).is_dir() for layer in layers))
 
     from imageviewer import service as service_pkg
     from imageviewer.viewmodel.ports import ViewerFacade
@@ -802,6 +810,11 @@ def check_wiring() -> None:
     check("main.py 把窗口标题交给窗口外观",
           "apply_dark_title_bar(WINDOW_TITLE)" in main_source
           and "start_show_watchdog(title=WINDOW_TITLE)" in main_source)
+    # src 布局打包必需：删掉这段引导，打包后包在 <app>/src/ 而 sys.path 不含它。
+    check("main.py 保留 src 布局引导",
+          "sys.path.insert(0, str(_SRC))" in main_source
+          and '(_SRC / "imageviewer").is_dir()' in main_source)
+    check("路径出口唯一（_paths）", (SRC / PACKAGE / "_paths.py").is_file())
 
 
 def main() -> int:

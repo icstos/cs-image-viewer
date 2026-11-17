@@ -9,7 +9,7 @@ import time
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CHILD = r"""
 import os, sys, time
-sys.path.insert(0, __ROOT__)
+sys.path.insert(0, os.path.join(__ROOT__, "src"))
 from imageviewer.infra.shared.runtime import SingletonLock
 lock = SingletonLock(__LOCK__)
 got = lock.acquire()

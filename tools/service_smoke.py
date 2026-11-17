@@ -32,7 +32,7 @@ _TMP_HOME = Path(tempfile.mkdtemp(prefix="csiv-smoke-home-"))
 os.environ["IMAGEVIEWER_HOME"] = str(_TMP_HOME)
 
 ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "src"))
 
 from PIL import Image  # noqa: E402
 

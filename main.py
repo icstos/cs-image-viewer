@@ -59,6 +59,14 @@ import sys
 import time
 from pathlib import Path
 
+# src 布局必需：隔离打包环境（flet build / PyInstaller 等）不会执行 pip install -e .，
+# 包被编译到 <app>/src/imageviewer/，而运行时 sys.path 只有 <app>/ 根、不含 src。
+# 这段同时覆盖开发态与打包态；删掉即打包后 ModuleNotFoundError。
+_ROOT = Path(__file__).resolve().parent
+_SRC = _ROOT / "src"
+if str(_SRC) not in sys.path and (_SRC / "imageviewer").is_dir():
+    sys.path.insert(0, str(_SRC))
+
 import ui
 
 from imageviewer.infra import paths, procs

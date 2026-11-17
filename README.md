@@ -88,9 +88,9 @@ flet build windows --python-version 3.12      # 产物在 build/windows/
 | --- | --- |
 | `[tool.flet.app] hide_window_on_start = true` | 客户端窗口创建后**不显示**，等 Python 布置好界面再亮出来 |
 | `[tool.flet.boot_screen.flet]` | 启动屏底色/转圈全设成深色，任何提前显示的帧都不会是白色 |
-| `[tool.flet.compile] app = true` | 打包时把 `main.py` / `imageviewer/**/*.py` 预编译成 `.pyc`，内嵌解释器启动更快 |
+| `[tool.flet.compile] app = true` | 打包时把 `main.py` / `src/imageviewer/**/*.py` 预编译成 `.pyc`，内嵌解释器启动更快 |
 
-启动屏 `bgcolor` 必须与 `imageviewer/view/design.py` 的 `C_SURFACE` 一致（当前 `#141518`，
+启动屏 `bgcolor` 必须与 `src/imageviewer/view/design.py` 的 `C_SURFACE` 一致（当前 `#141518`，
 由 `ui.core.palette.build_scheme()` 推导）。静态 TOML 无法 import 运行时色板，
 由 `tools/layered_smoke.py` 的「启动屏底色 = 窗口底色」断言守住，换品牌色时同步改。
 
@@ -304,11 +304,11 @@ Python 才会真正启动。`main.py` 按 `env → 请求文件 → argv` 顺序
 
 | 层 | 目录 | 职责 | 关键约定 |
 | --- | --- | --- | --- |
-| models | `imageviewer/models/` | `geometry`（倍率/平移/锚点缩放/框选/滚轮意图/按钮定位）、`media`（变换与探测结果）、`actions`（动作枚举 + 间隔表）、`view_state`（`ViewerState` 冻结 dataclass）、`diagnostics`、`formats`（格式白名单**单一事实源**） | 零 IO、零 UI；`__init__` 不 import 任何子层，因此「不开窗口也能断言几何」 |
-| infra | `imageviewer/infra/` | `imaging`（解码/变换/编码纯函数）、`catalog`（目录扫描）、`display/local|shared`（显示数据来源）、`shared/*`（常驻主进程 + 线协议 + 磁盘/内存缓存）、`paths`、`trash`、`association`、`platform`、`windows`（DWM/看门狗）、`procs`、`concurrency` | 只封装技术细节，不含业务判断；对外暴露的是能力，不是库 |
-| service | `imageviewer/service/` | `ViewerService`（装配 + `load_current` / `open_in_new_windows` / `install_association` / `service_report`）、`Gallery`（打开/扫描/翻页/变换/删除）、`ports.py`（`DisplayProvider` / `FileTrash` / `AssociationStore` / `PlatformInfo` / `ProcessLauncher`，全部 `runtime_checkable`）、`diagnostics` | 只依赖抽象：换回收站实现、换显示来源都在 `main.py` 一行之内 |
-| viewmodel | `imageviewer/viewmodel/` | `ViewerViewModel`（`state` / `subscribe` / `dispatch` / 手势与缩放 / 播放循环 / 对话框请求 / 导出 / 删除 / 文件关联）、`formatting`（状态栏与诊断文案）、`ports.py`（`BackgroundRunner` / `TaskScheduler` / `ViewerFacade`） | 纯 Python 类，**不认识任何控件**；后台循环由状态差异驱动启停（`_reconcile_loops`） |
-| view | `imageviewer/view/` | `app.py`（根组件：装配 + 事件分发 + effect）、`design`（设计令牌唯一投影）、`kit` / `glass` / `viewport` / `canvas` / `bars` / `dialogs` / `menu` / `keymap` / `scheduler` | 只 `import ui`；`UI = f(state)`，控件树冻结，副作用一律由 `use_effect` 声明 |
+| models | `src/imageviewer/models/` | `geometry`（倍率/平移/锚点缩放/框选/滚轮意图/按钮定位）、`media`（变换与探测结果）、`actions`（动作枚举 + 间隔表）、`view_state`（`ViewerState` 冻结 dataclass）、`diagnostics`、`formats`（格式白名单**单一事实源**） | 零 IO、零 UI；`__init__` 不 import 任何子层，因此「不开窗口也能断言几何」 |
+| infra | `src/imageviewer/infra/` | `imaging`（解码/变换/编码纯函数）、`catalog`（目录扫描）、`display/local|shared`（显示数据来源）、`shared/*`（常驻主进程 + 线协议 + 磁盘/内存缓存）、`paths`、`trash`、`association`、`platform`、`windows`（DWM/看门狗）、`procs`、`concurrency` | 只封装技术细节，不含业务判断；对外暴露的是能力，不是库 |
+| service | `src/imageviewer/service/` | `ViewerService`（装配 + `load_current` / `open_in_new_windows` / `install_association` / `service_report`）、`Gallery`（打开/扫描/翻页/变换/删除）、`ports.py`（`DisplayProvider` / `FileTrash` / `AssociationStore` / `PlatformInfo` / `ProcessLauncher`，全部 `runtime_checkable`）、`diagnostics` | 只依赖抽象：换回收站实现、换显示来源都在 `main.py` 一行之内 |
+| viewmodel | `src/imageviewer/viewmodel/` | `ViewerViewModel`（`state` / `subscribe` / `dispatch` / 手势与缩放 / 播放循环 / 对话框请求 / 导出 / 删除 / 文件关联）、`formatting`（状态栏与诊断文案）、`ports.py`（`BackgroundRunner` / `TaskScheduler` / `ViewerFacade`） | 纯 Python 类，**不认识任何控件**；后台循环由状态差异驱动启停（`_reconcile_loops`） |
+| view | `src/imageviewer/view/` | `app.py`（根组件：装配 + 事件分发 + effect）、`design`（设计令牌唯一投影）、`kit` / `glass` / `viewport` / `canvas` / `bars` / `dialogs` / `menu` / `keymap` / `scheduler` | 只 `import ui`；`UI = f(state)`，控件树冻结，副作用一律由 `use_effect` 声明 |
 
 三条把「分层」从口号变成可执行规则的设计：
 
@@ -329,7 +329,7 @@ Python 才会真正启动。`main.py` 按 `env → 请求文件 → argv` 顺序
 
 | cs-ui 能力 | 用途 |
 | --- | --- |
-| `ui.core.tokens` / `ui.core.palette` | 设计令牌与配色引擎（`build_scheme` 出整套 M3 色板）；`imageviewer/view/design.py` 的唯一色值输入 |
+| `ui.core.tokens` / `ui.core.palette` | 设计令牌与配色引擎（`build_scheme` 出整套 M3 色板）；`src/imageviewer/view/design.py` 的唯一色值输入 |
 | `ui.MenuBar` / `MenuAction` / `MenuSection` | 数据驱动的桌面下拉菜单栏，快捷键用 `ui.Kbd` 键帽呈现；`shortcut_map()` / `validate_sections()` 可查询可断言 |
 | `ui.StatusBar(center=...)` | 三段式状态栏（在原两段式上扩展，旧用法向后兼容） |
 
@@ -369,11 +369,27 @@ py -3.12 -c "from imageviewer.models import geometry as G; \
 `models/geometry.py` 与 `view/*` 不在 `ui-mcp` 索引里 —— 它们只服务本项目，
 查阅靠模块文档与 `tools/layered_smoke.py` 的断言。
 
+### src 布局
+
+包位于 `src/imageviewer/`，`main.py` 与 `assets/` 留在仓库根（flet build 的入口与
+资源约定）。`pyproject.toml` 用 `package-dir = { "" = ".", imageviewer = "src/imageviewer" }`
+把两者分别映射：**不能**写成 `{ "" = "src" }`，那样根 `main.py` 会被静默漏出
+wheel / editable 映射，控制台脚本 `imageviewer = "main:run"` 随即失效。
+配套三条约束，都由 `tools/layered_smoke.py` 守住：
+
+1. `main.py` 顶部把 `src/` 插入 `sys.path` —— 打包态不会执行 `pip install -e .`，
+   包被编译到 `<app>/src/imageviewer/`，没有这段引导就是 `ModuleNotFoundError`；
+2. 指向仓库根 / 资源目录的路径只走 `imageviewer/_paths.py`，不在调用处按
+   `__file__` 数层（src 迁移后层数必然变，且错了不报错）；
+3. 子进程（daemon）不继承父进程的 `sys.path`，`infra/procs.py` 显式把 `src/`
+   注入子进程命令。
+
 ## 结构
 
 ```
-pyproject.toml        依赖与打包配置（PEP 621 + [tool.flet]）
+pyproject.toml        依赖与打包配置（PEP 621 + [tool.flet] + src 布局映射）
 main.py               唯一组合根（装配五层；角色分发：窗口 / 主进程；启动路径：env / 请求文件 / argv）
+                      顶部含 src 布局引导：把 src/ 插入 sys.path，打包后仍能 import 包
 assets/fonts/         随包字体（AlibabaPuHuiTi-3-55-Regular.otf，全局界面字体）
 assets/runtime/       随包解释器启动器（python.exe，约 100KB，用于拉起无窗口主进程）
 tools/                自检脚本（前四个不开窗口）
@@ -382,48 +398,50 @@ tools/                自检脚本（前四个不开窗口）
   election_smoke.py     双进程竞选
   lock_check.py         单实例锁互斥
   ui_visual_check.py    真机截图（PrintWindow）+ 灰块 / 溢出 / 翻页箭头 / 抓帧有效性
-imageviewer/
-  models/              ── 层 1：纯数据，所有层可依赖
-    geometry.py          视图几何（纯计算，零 UI 依赖，可脱离窗口复算）
-    media.py             Transform / ImageProbe / DisplayImage / ImageInfo
-    actions.py           Action 枚举 + 快捷键专属集 + 幻灯片间隔表
-    view_state.py        ViewerState / Notice / DialogRequest / RequestKind
-    diagnostics.py       BlobStats / DecodeStats / ServiceReport
-    formats.py           格式白名单（唯一事实源）
-  infra/               ── 层 2：技术实现，不含业务判断
-    imaging.py           解码 / 变换 / 编码纯函数（本地与服务共用，结果逐字节一致）
-    catalog.py           目录扫描与自然排序
-    display/local.py     本地显示：探测 / 出图 / 列表 / 预加载 / 导出 / 缓存统计
-    display/shared.py    共享显示：静态图走服务、动图本地、服务失败降级
-    shared/              常驻主进程：runtime / protocol / blobs / service / server / client / daemon
-    paths.py             用户级目录（缓存/注册表/日志）
-    trash.py             回收站
-    association.py       Windows 文件关联（`imageviewer-assoc`）
-    platform.py          平台查询（Windows / Ctrl 状态 / 可执行文件）
-    windows.py           窗口外观（DWM 暗色标题栏 / 居中 / 显示看门狗）
-    procs.py             拉起主进程与窗口子进程
-    concurrency.py       线程卸载（AsyncioRunner）
-  service/             ── 层 3：业务编排，只依赖端口协议
-    ports.py             DisplayProvider / FileTrash / AssociationStore / PlatformInfo / ProcessLauncher
-    gallery.py           画册用例：打开 / 扫描 / 翻页 / 变换 / 逐帧 / 删除
-    viewer.py            ViewerService：装配 + load_current + 多窗口 + 关联 + 诊断
-    diagnostics.py       服务报告解析
-  viewmodel/           ── 层 4：界面状态与交互意图，不认识控件
-    viewer_vm.py         ViewerViewModel：state / dispatch / 手势 / 播放循环 / 请求 / 导出 / 删除
-    formatting.py        状态栏与诊断文案（纯函数）
-    ports.py             BackgroundRunner / TaskScheduler / ViewerFacade
-  view/                ── 层 5：声明式渲染，只 import ui
-    app.py               根组件：装配 + 事件分发 + effect（订阅/尺寸/全屏/提示/弹窗/关窗）
-    design.py            设计令牌投影（品牌色 → 色表 / 尺寸 / 字号，snapshot 可导出）
-    kit.py                UI 词汇：文本 / 按钮 / 空态 / 提示
-    glass.py             玻璃翻页按钮（压在图片上的浮层，纯工厂，无隐藏签名）
-    viewport.py          图片视口四层渲染：背景 / 图像 / 框选 / 浮层
-    canvas.py            画布装配：视口 + 浮层 + 手势
-    bars.py              菜单栏 / 三段式状态栏
-    menu.py              菜单纯数据 + 快捷键表 + 分发校验
-    keymap.py            按键组合 → Action
-    dialogs.py           确认框 / 诊断框构件
-    scheduler.py         页面任务调度（TaskScheduler 实现）
+src/
+  imageviewer/         src 布局项目包（__init__.py + _paths.py 路径唯一出口）
+    _paths.py           仓库根 / 资源目录的唯一出口（禁止按 __file__ 数层）
+    models/            ── 层 1：纯数据，所有层可依赖
+      geometry.py          视图几何（纯计算，零 UI 依赖，可脱离窗口复算）
+      media.py             Transform / ImageProbe / DisplayImage / ImageInfo
+      actions.py           Action 枚举 + 快捷键专属集 + 幻灯片间隔表
+      view_state.py        ViewerState / Notice / DialogRequest / RequestKind
+      diagnostics.py       BlobStats / DecodeStats / ServiceReport
+      formats.py           格式白名单（唯一事实源）
+    infra/               ── 层 2：技术实现，不含业务判断
+      imaging.py           解码 / 变换 / 编码纯函数（本地与服务共用，结果逐字节一致）
+      catalog.py           目录扫描与自然排序
+      display/local.py     本地显示：探测 / 出图 / 列表 / 预加载 / 导出 / 缓存统计
+      display/shared.py    共享显示：静态图走服务、动图本地、服务失败降级
+      shared/              常驻主进程：runtime / protocol / blobs / service / server / client / daemon
+      paths.py             用户级目录（缓存/注册表/日志）
+      trash.py             回收站
+      association.py       Windows 文件关联（`imageviewer-assoc`）
+      platform.py          平台查询（Windows / Ctrl 状态 / 可执行文件）
+      windows.py           窗口外观（DWM 暗色标题栏 / 居中 / 显示看门狗）
+      procs.py             拉起主进程与窗口子进程
+      concurrency.py       线程卸载（AsyncioRunner）
+    service/             ── 层 3：业务编排，只依赖端口协议
+      ports.py             DisplayProvider / FileTrash / AssociationStore / PlatformInfo / ProcessLauncher
+      gallery.py           画册用例：打开 / 扫描 / 翻页 / 变换 / 逐帧 / 删除
+      viewer.py            ViewerService：装配 + load_current + 多窗口 + 关联 + 诊断
+      diagnostics.py       服务报告解析
+    viewmodel/           ── 层 4：界面状态与交互意图，不认识控件
+      viewer_vm.py         ViewerViewModel：state / dispatch / 手势 / 播放循环 / 请求 / 导出 / 删除
+      formatting.py        状态栏与诊断文案（纯函数）
+      ports.py             BackgroundRunner / TaskScheduler / ViewerFacade
+    view/                ── 层 5：声明式渲染，只 import ui
+      app.py               根组件：装配 + 事件分发 + effect（订阅/尺寸/全屏/提示/弹窗/关窗）
+      design.py            设计令牌投影（品牌色 → 色表 / 尺寸 / 字号，snapshot 可导出）
+      kit.py                UI 词汇：文本 / 按钮 / 空态 / 提示
+      glass.py             玻璃翻页按钮（压在图片上的浮层，纯工厂，无隐藏签名）
+      viewport.py          图片视口四层渲染：背景 / 图像 / 框选 / 浮层
+      canvas.py            画布装配：视口 + 浮层 + 手势
+      bars.py              菜单栏 / 三段式状态栏
+      menu.py              菜单纯数据 + 快捷键表 + 分发校验
+      keymap.py            按键组合 → Action
+      dialogs.py           确认框 / 诊断框构件
+      scheduler.py         页面任务调度（TaskScheduler 实现）
 ```
 
 ## 说明

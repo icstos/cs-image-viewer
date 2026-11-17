@@ -16,7 +16,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 CODE = r"""
 import os, sys, time
-sys.path.insert(0, __ROOT__)
+sys.path.insert(0, os.path.join(__ROOT__, "src"))
 from imageviewer.infra.shared.client import default_link
 link = default_link()
 ok = link.acquire(budget=3.0)
