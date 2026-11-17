@@ -7,12 +7,12 @@
 
 两种用法：
 
-1. 自动（推荐）：窗口启动时由 ``imageviewer/infra/procs.py`` 拉起，无窗口、无控制台；
+1. 自动（推荐）：窗口启动时由 ``cs_image_viewer/infra/procs.py`` 拉起，无窗口、无控制台；
    所有窗口关闭后仍常驻，空闲 `CSIV_MASTER_IDLE` 秒（默认 900）后自行退出。
 2. 手动（开发/调试）：
-       python -m imageviewer.infra.shared.daemon            # 前台常驻，Ctrl+C 退出
-       python -m imageviewer.infra.shared.daemon --detach   # 分离到后台
-       python -m imageviewer.infra.shared.daemon --idle 600 # 无窗口连接超过 600 秒就退出
+       python -m cs_image_viewer.infra.shared.daemon            # 前台常驻，Ctrl+C 退出
+       python -m cs_image_viewer.infra.shared.daemon --detach   # 分离到后台
+       python -m cs_image_viewer.infra.shared.daemon --idle 600 # 无窗口连接超过 600 秒就退出
 """
 from __future__ import annotations
 
@@ -77,7 +77,7 @@ def serve(idle_timeout: float = 0.0, verbose: bool = False) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        prog="python -m imageviewer.infra.shared.daemon",
+        prog="python -m cs_image_viewer.infra.shared.daemon",
         description="ImageViewer 共享缓存主进程（常驻后台）",
     )
     parser.add_argument("--detach", action="store_true", help="分离到后台运行（无控制台窗口）")

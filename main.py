@@ -60,36 +60,36 @@ import time
 from pathlib import Path
 
 # src 布局必需：隔离打包环境（flet build / PyInstaller 等）不会执行 pip install -e .，
-# 包被编译到 <app>/src/imageviewer/，而运行时 sys.path 只有 <app>/ 根、不含 src。
+# 包被编译到 <app>/src/cs_image_viewer/，而运行时 sys.path 只有 <app>/ 根、不含 src。
 # 这段同时覆盖开发态与打包态；删掉即打包后 ModuleNotFoundError。
 _ROOT = Path(__file__).resolve().parent
 _SRC = _ROOT / "src"
-if str(_SRC) not in sys.path and (_SRC / "imageviewer").is_dir():
+if str(_SRC) not in sys.path and (_SRC / "cs_image_viewer").is_dir():
     sys.path.insert(0, str(_SRC))
 
 import ui
 
-from imageviewer.infra import paths, procs
-from imageviewer.infra.association import WindowsAssociation
-from imageviewer.infra.concurrency import AsyncioRunner
-from imageviewer.infra.display import LocalDisplay, SharedDisplay
-from imageviewer.infra.platform import SystemPlatform, ctrl_pressed
-from imageviewer.infra.procs import WindowLauncher
-from imageviewer.infra.shared.client import (
+from cs_image_viewer.infra import paths, procs
+from cs_image_viewer.infra.association import WindowsAssociation
+from cs_image_viewer.infra.concurrency import AsyncioRunner
+from cs_image_viewer.infra.display import LocalDisplay, SharedDisplay
+from cs_image_viewer.infra.platform import SystemPlatform, ctrl_pressed
+from cs_image_viewer.infra.procs import WindowLauncher
+from cs_image_viewer.infra.shared.client import (
     ServiceLink,
     default_link,
     shutdown_default_link,
 )
-from imageviewer.infra.trash import TrashBin
-from imageviewer.infra.windows import (
+from cs_image_viewer.infra.trash import TrashBin
+from cs_image_viewer.infra.windows import (
     apply_dark_title_bar,
     ensure_visible,
     start_show_watchdog,
 )
-from imageviewer.service import ViewerService
-from imageviewer.view import build_app, design, remember_window_size
-from imageviewer.view.scheduler import PageTaskScheduler
-from imageviewer.viewmodel import ViewerViewModel
+from cs_image_viewer.service import ViewerService
+from cs_image_viewer.view import build_app, design, remember_window_size
+from cs_image_viewer.view.scheduler import PageTaskScheduler
+from cs_image_viewer.viewmodel import ViewerViewModel
 
 # 文件关联启动器写入的通道（与 infra/association.py、infra/procs.py 保持一致）
 OPEN_ENV = "IMAGEVIEWER_OPEN"
@@ -380,8 +380,8 @@ async def _smoke_run(page: ui.Page, start_source: str, start_path: str | None) -
 def run() -> None:
     """启动入口：``py -3.12 main.py`` 与 ``imageviewer`` 控制台脚本共用。"""
     if os.environ.get(ROLE_ENV) == "daemon":
-        # 角色分发：不建窗口，只跑共享服务（等价于 python -m imageviewer.infra.shared.daemon）
-        from imageviewer.infra.shared.daemon import main as daemon_main
+        # 角色分发：不建窗口，只跑共享服务（等价于 python -m cs_image_viewer.infra.shared.daemon）
+        from cs_image_viewer.infra.shared.daemon import main as daemon_main
 
         raise SystemExit(daemon_main([]))
     if os.environ.get("CSIV_WEB"):

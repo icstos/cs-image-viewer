@@ -1,4 +1,4 @@
-"""画布构件 —— 把 :class:`imageviewer.view.viewport.ImageViewport`、玻璃翻页按钮与手势层装配起来。
+"""画布构件 —— 把 :class:`cs_image_viewer.view.viewport.ImageViewport`、玻璃翻页按钮与手势层装配起来。
 
 几何（倍率 / 平移 / 框选 / 滚轮意图 / 按钮位置）全部在 :mod:`viewer.geometry` 里算，
 这里只做三件事：把结果交给视口渲染、把本项目的浮层按钮塞进视口的 ``overlay``
@@ -6,7 +6,7 @@
 单独构造来检查控件树。
 
 视口不画导航按钮 —— 皮肤是产品决策，它只提供 ``overlay``。玻璃按钮在
-:mod:`imageviewer.view.glass`，位置仍取自同一层的 ``nav_geometry()``。
+:mod:`cs_image_viewer.view.glass`，位置仍取自同一层的 ``nav_geometry()``。
 
 手势绑定沿用 Flet 的 ``GestureDetector``：左键拖拽框选、区内单击放大、右键拖拽
 平移、滚轮翻页 / 滚动 / 缩放、双击切全屏。``drag_interval=16`` 把拖动事件节流到

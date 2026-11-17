@@ -19,7 +19,7 @@
 
 **本组件不画导航按钮。** 「翻页箭头长什么样」是产品的视觉决策，所以只留一个
 ``overlay`` 口子：位置由 :func:`viewer.geometry.nav_geometry` 算，皮肤与三态
-由调用方决定（本项目的实现见 :mod:`imageviewer.view.glass`）。
+由调用方决定（本项目的实现见 :mod:`cs_image_viewer.view.glass`）。
 
 .. note::
    这一层原本在 cs-ui 作为公共组件，2026-11-14 随 :mod:`viewer.geometry` 一起

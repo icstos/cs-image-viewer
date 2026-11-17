@@ -30,22 +30,22 @@ build = ["flet-cli>=1.0.0"]
 
 [project.scripts]
 imageviewer = "main:run"
-imageviewer-assoc = "imageviewer.infra.association:main"   # Windows“打开方式”文件关联
-imageviewer-daemon = "imageviewer.infra.shared.daemon:main"  # 常驻共享缓存（无窗口）
+imageviewer-assoc = "cs_image_viewer.infra.association:main"   # Windows“打开方式”文件关联
+imageviewer-daemon = "cs_image_viewer.infra.shared.daemon:main"  # 常驻共享缓存（无窗口）
 
 [tool.setuptools]
-# src 布局：包位于 src/imageviewer/，main.py 仍在仓库根（flet build 的入口，
-# 组合根，不能挪进 src）。空串键把顶层模块留在根，只把 imageviewer 映射到 src；
+# src 布局：包位于 src/cs_image_viewer/，main.py 仍在仓库根（flet build 的入口，
+# 组合根，不能挪进 src）。空串键把顶层模块留在根，只把 cs_image_viewer 映射到 src；
 # 子包（models / infra / ...）由 packages.find 自动发现，新增分层免维护。
 # 不能写成 package-dir = { "" = "src" }：那样 main.py 会被静默漏出 wheel /
 # editable 映射，控制台脚本 imageviewer = "main:run" 随即失效。
 py-modules = ["main"]
-package-dir = { "" = ".", "imageviewer" = "src/imageviewer" }
+package-dir = { "" = ".", "cs_image_viewer" = "src/cs_image_viewer" }
 
 [tool.setuptools.packages.find]
-# 从 src 发现 imageviewer 及其全部子包（含新增分层）。
+# 从 src 发现 cs_image_viewer 及其全部子包（含新增分层）。
 where = ["src"]
-include = ["imageviewer*"]
+include = ["cs_image_viewer*"]
 
 # ---------------------------------------------------------------------------
 # Flet 打包配置（flet build windows / macos / linux）
@@ -71,7 +71,7 @@ hide_window_on_start = true
 # 启动屏（窗口万一提前显示时的兜底）：深色底 + 深色转圈，
 # 不留任何白色帧。颜色键名见 flet 的 FletBootScreen。
 #
-# bgcolor 必须与 imageviewer/view/design.py 的 C_SURFACE 一致（当前 #141518，
+# bgcolor 必须与 cs_image_viewer/view/design.py 的 C_SURFACE 一致（当前 #141518，
 # 由 MediaPalette.derive(BRAND_PRIMARY, "dark").surface 推导）。
 # 静态 TOML 没法 import 运行时色表，所以由 tools/layered_smoke.py
 # 的「启动屏底色 = 窗口底色」断言守住，换品牌色时同步改这里。

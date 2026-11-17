@@ -3,9 +3,9 @@
 一次「打开图片」要经过 解码 → EXIF 摆正 → 色彩归一化 → 显示层变换 → 限尺寸 →
 编码 六步。这条管线有**两个执行者**：
 
-1. :class:`imageviewer.infra.display.local.LocalDisplay` —— 窗口进程内的本地解码
+1. :class:`cs_image_viewer.infra.display.local.LocalDisplay` —— 窗口进程内的本地解码
    （动图逐帧、共享服务不可用时的降级、导出原图）；
-2. :class:`imageviewer.infra.shared.service.ImageService` —— 常驻服务的共享缓存
+2. :class:`cs_image_viewer.infra.shared.service.ImageService` —— 常驻服务的共享缓存
    （把编码结果写进磁盘缓存给所有窗口复用）。
 
 两条路径必须逐字节一致，否则「走缓存」和「走本地」会看到不同的图。因此这里只放

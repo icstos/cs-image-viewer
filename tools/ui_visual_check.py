@@ -222,7 +222,7 @@ def _pixels(img):
 
 def _panel_rgb() -> tuple[int, int, int]:
     """菜单栏 / 状态栏的面板底色（唯一事实源是 design.py，这里只读一次）。"""
-    from imageviewer.view import design
+    from cs_image_viewer.view import design
 
     raw = design.C_PANEL.lstrip("#")
     return int(raw[0:2], 16), int(raw[2:4], 16), int(raw[4:6], 16)

@@ -1,7 +1,7 @@
 """项目级路径的唯一出口。
 
-src 布局下包从 ``<root>/imageviewer/`` 移到 ``<root>/src/imageviewer/``，任何
-「按 ``__file__`` 向上数 N 层」的代码都会静默多算一层且不报错。所有指向仓库
+src 布局下包位于 ``<root>/src/cs_image_viewer/``（此前在 ``<root>/imageviewer/``），
+任何「按 ``__file__`` 向上数 N 层」的代码都会静默多算一层且不报错。所有指向仓库
 根 / 资源目录的路径都从这里取，迁移或再调整层级时只改这一处。
 """
 from __future__ import annotations
@@ -14,9 +14,9 @@ _ASSETS_NAME = "assets"
 def repo_root() -> Path:
     """仓库根（开发态）/ 打包应用根（打包态，main.py 所在目录）。
 
-    本文件位于 ``<root>/src/imageviewer/_paths.py``：
-    ``parents[0]=imageviewer``、``[1]=src``、``[2]=<root>``。打包后包被编译到
-    ``<app>/src/imageviewer/``，上三级同样是 ``<app>``，两种场景一致。
+    本文件位于 ``<root>/src/cs_image_viewer/_paths.py``：
+    ``parents[0]=cs_image_viewer``、``[1]=src``、``[2]=<root>``。打包后包被编译到
+    ``<app>/src/cs_image_viewer/``，上三级同样是 ``<app>``，两种场景一致。
     """
     return Path(__file__).resolve().parents[2]
 

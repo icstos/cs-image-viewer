@@ -36,14 +36,14 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from PIL import Image  # noqa: E402
 
-from imageviewer.infra.display import SharedDisplay  # noqa: E402
-from imageviewer.infra.shared.client import (  # noqa: E402
+from cs_image_viewer.infra.display import SharedDisplay  # noqa: E402
+from cs_image_viewer.infra.shared.client import (  # noqa: E402
     ServiceClient,
     ServiceHost,
     ServiceLink,
 )
-from imageviewer.infra.shared.runtime import Registry  # noqa: E402
-from imageviewer.service import ViewerService  # noqa: E402
+from cs_image_viewer.infra.shared.runtime import Registry  # noqa: E402
+from cs_image_viewer.service import ViewerService  # noqa: E402
 
 PASSED: list[str] = []
 

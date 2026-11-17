@@ -1,7 +1,7 @@
 """玻璃翻页按钮 —— 本项目专用的媒体浮层构件。
 
 **为什么不在 cs-ui。**
-:class:`imageviewer.view.viewport.ImageViewport` 只留一个 ``overlay`` 口子，「按钮长什么样」
+:class:`cs_image_viewer.view.viewport.ImageViewport` 只留一个 ``overlay`` 口子，「按钮长什么样」
 交给调用方：
 看图软件要压在照片上的半透明圆钮，PDF 阅读器可能要紧贴边缘的实心按钮，
 画廊可能要带页码的胶囊。把其中一种皮肤写进公共视口，等于替所有使用者做了

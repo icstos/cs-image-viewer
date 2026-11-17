@@ -5,7 +5,7 @@
 起点，也是断言的落脚点：
 
 * 想知道「窗口上一共有哪些状态」→ :class:`ViewerState`；
-* 想知道「一个视图变换是什么」→ :mod:`imageviewer.models.geometry`；
+* 想知道「一个视图变换是什么」→ :mod:`cs_image_viewer.models.geometry`；
 * 想知道「用户能触发哪些意图」→ :class:`Action`；
 * 想知道「共享缓存体检报告长什么样」→ :class:`ServiceReport`。
 

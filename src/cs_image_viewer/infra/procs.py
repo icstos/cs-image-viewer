@@ -230,13 +230,13 @@ def daemon_command(py: str) -> tuple[list[str], str]:
     """
     if python_exe():
         # src 布局：子进程不继承父进程在 main.py 里插入的 sys.path，直接用
-        # `-m imageviewer...` 在未做 editable install 的开发态会找不到包。
+        # `-m cs_image_viewer...` 在未做 editable install 的开发态会找不到包。
         # 显式把 src/ 加进子进程路径，功能与安装态完全一致。
         src_dir = main_script() / "src"
         code = (
             "import sys;"
             f"sys.path.insert(0, {str(src_dir)!r});"
-            "from imageviewer.infra.shared.daemon import main;"
+            "from cs_image_viewer.infra.shared.daemon import main;"
             "raise SystemExit(main())"
         )
         return [py, "-c", code], str(main_script())
@@ -247,7 +247,7 @@ def daemon_command(py: str) -> tuple[list[str], str]:
         "import sys;"
         f"sys.path.insert(0, {str(app_dir)!r});"
         f"sys.path.insert(1, {str(site)!r});"
-        "from imageviewer.infra.shared.daemon import main;"
+        "from cs_image_viewer.infra.shared.daemon import main;"
         "raise SystemExit(main())"
     )
     return [py, "-E", "-s", "-c", code], str(app_dir)

@@ -6,7 +6,7 @@
 2. **构件是纯函数**：值从参数进、意图从回调出，不持有状态、不读全局可变状态；
 3. **文案密度克制**：一个控件只承担一个意思，能用键帽说清的不再加一行字。
 
-颜色、字号、间距、圆角全部来自 :mod:`imageviewer.view.design`，因此换配色、调密度只动一处。
+颜色、字号、间距、圆角全部来自 :mod:`cs_image_viewer.view.design`，因此换配色、调密度只动一处。
 """
 
 from __future__ import annotations

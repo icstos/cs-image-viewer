@@ -88,9 +88,9 @@ flet build windows --python-version 3.12      # 产物在 build/windows/
 | --- | --- |
 | `[tool.flet.app] hide_window_on_start = true` | 客户端窗口创建后**不显示**，等 Python 布置好界面再亮出来 |
 | `[tool.flet.boot_screen.flet]` | 启动屏底色/转圈全设成深色，任何提前显示的帧都不会是白色 |
-| `[tool.flet.compile] app = true` | 打包时把 `main.py` / `src/imageviewer/**/*.py` 预编译成 `.pyc`，内嵌解释器启动更快 |
+| `[tool.flet.compile] app = true` | 打包时把 `main.py` / `src/cs_image_viewer/**/*.py` 预编译成 `.pyc`，内嵌解释器启动更快 |
 
-启动屏 `bgcolor` 必须与 `src/imageviewer/view/design.py` 的 `C_SURFACE` 一致（当前 `#141518`，
+启动屏 `bgcolor` 必须与 `src/cs_image_viewer/view/design.py` 的 `C_SURFACE` 一致（当前 `#141518`，
 由 `ui.core.palette.build_scheme()` 推导）。静态 TOML 无法 import 运行时色板，
 由 `tools/layered_smoke.py` 的「启动屏底色 = 窗口底色」断言守住，换品牌色时同步改。
 
@@ -146,8 +146,8 @@ py -3.12 main.py a.jpg          # 自动拉起主进程 + 窗口1（窗口1 是�
 py -3.12 main.py b.png          # 再开一个窗口进程，直接接入同一个主进程
 # 程序内：文件 → 在新窗口打开（Ctrl+N）；双击不同图片效果相同
 
-py -3.12 -m imageviewer.infra.shared.daemon -v        # 手动前台跑主进程（开发/调试）
-py -3.12 -m imageviewer.infra.shared.daemon --detach  # 分离到后台
+py -3.12 -m cs_image_viewer.infra.shared.daemon -v        # 手动前台跑主进程（开发/调试）
+py -3.12 -m cs_image_viewer.infra.shared.daemon --detach  # 分离到后台
 ```
 
 环境变量：`CSIV_SHARED=0` 关闭共享（退回单进程本地解码，便于对比性能）；
@@ -187,13 +187,13 @@ py -3.12 tools/ui_visual_check.py               # 空窗口对照
 
 ```bash
 flet build windows --python-version 3.12  # 产物在 build/windows/
-py -3.12 -m imageviewer.infra.association install     # 注册“打开方式”+ 右键菜单（免管理员）
-py -3.12 -m imageviewer.infra.association status      # 查看当前关联状态
-py -3.12 -m imageviewer.infra.association uninstall   # 全部撤销
+py -3.12 -m cs_image_viewer.infra.association install     # 注册“打开方式”+ 右键菜单（免管理员）
+py -3.12 -m cs_image_viewer.infra.association status      # 查看当前关联状态
+py -3.12 -m cs_image_viewer.infra.association uninstall   # 全部撤销
 imageviewer-assoc status                              # 安装后等价的控制台脚本
 
 # 产物名与 pyproject 声明的 artifact 不一致时（例如 build 时加了 --artifact），显式指定：
-py -3.12 -m imageviewer.infra.association install --exe "build\windows\图片查看器.exe"
+py -3.12 -m cs_image_viewer.infra.association install --exe "build\windows\图片查看器.exe"
 ```
 
 全部写在 `HKCU`，不需要管理员权限。注册内容：34 种图片格式的 `OpenWithProgids`、
@@ -304,11 +304,11 @@ Python 才会真正启动。`main.py` 按 `env → 请求文件 → argv` 顺序
 
 | 层 | 目录 | 职责 | 关键约定 |
 | --- | --- | --- | --- |
-| models | `src/imageviewer/models/` | `geometry`（倍率/平移/锚点缩放/框选/滚轮意图/按钮定位）、`media`（变换与探测结果）、`actions`（动作枚举 + 间隔表）、`view_state`（`ViewerState` 冻结 dataclass）、`diagnostics`、`formats`（格式白名单**单一事实源**） | 零 IO、零 UI；`__init__` 不 import 任何子层，因此「不开窗口也能断言几何」 |
-| infra | `src/imageviewer/infra/` | `imaging`（解码/变换/编码纯函数）、`catalog`（目录扫描）、`display/local|shared`（显示数据来源）、`shared/*`（常驻主进程 + 线协议 + 磁盘/内存缓存）、`paths`、`trash`、`association`、`platform`、`windows`（DWM/看门狗）、`procs`、`concurrency` | 只封装技术细节，不含业务判断；对外暴露的是能力，不是库 |
-| service | `src/imageviewer/service/` | `ViewerService`（装配 + `load_current` / `open_in_new_windows` / `install_association` / `service_report`）、`Gallery`（打开/扫描/翻页/变换/删除）、`ports.py`（`DisplayProvider` / `FileTrash` / `AssociationStore` / `PlatformInfo` / `ProcessLauncher`，全部 `runtime_checkable`）、`diagnostics` | 只依赖抽象：换回收站实现、换显示来源都在 `main.py` 一行之内 |
-| viewmodel | `src/imageviewer/viewmodel/` | `ViewerViewModel`（`state` / `subscribe` / `dispatch` / 手势与缩放 / 播放循环 / 对话框请求 / 导出 / 删除 / 文件关联）、`formatting`（状态栏与诊断文案）、`ports.py`（`BackgroundRunner` / `TaskScheduler` / `ViewerFacade`） | 纯 Python 类，**不认识任何控件**；后台循环由状态差异驱动启停（`_reconcile_loops`） |
-| view | `src/imageviewer/view/` | `app.py`（根组件：装配 + 事件分发 + effect）、`design`（设计令牌唯一投影）、`kit` / `glass` / `viewport` / `canvas` / `bars` / `dialogs` / `menu` / `keymap` / `scheduler` | 只 `import ui`；`UI = f(state)`，控件树冻结，副作用一律由 `use_effect` 声明 |
+| models | `src/cs_image_viewer/models/` | `geometry`（倍率/平移/锚点缩放/框选/滚轮意图/按钮定位）、`media`（变换与探测结果）、`actions`（动作枚举 + 间隔表）、`view_state`（`ViewerState` 冻结 dataclass）、`diagnostics`、`formats`（格式白名单**单一事实源**） | 零 IO、零 UI；`__init__` 不 import 任何子层，因此「不开窗口也能断言几何」 |
+| infra | `src/cs_image_viewer/infra/` | `imaging`（解码/变换/编码纯函数）、`catalog`（目录扫描）、`display/local|shared`（显示数据来源）、`shared/*`（常驻主进程 + 线协议 + 磁盘/内存缓存）、`paths`、`trash`、`association`、`platform`、`windows`（DWM/看门狗）、`procs`、`concurrency` | 只封装技术细节，不含业务判断；对外暴露的是能力，不是库 |
+| service | `src/cs_image_viewer/service/` | `ViewerService`（装配 + `load_current` / `open_in_new_windows` / `install_association` / `service_report`）、`Gallery`（打开/扫描/翻页/变换/删除）、`ports.py`（`DisplayProvider` / `FileTrash` / `AssociationStore` / `PlatformInfo` / `ProcessLauncher`，全部 `runtime_checkable`）、`diagnostics` | 只依赖抽象：换回收站实现、换显示来源都在 `main.py` 一行之内 |
+| viewmodel | `src/cs_image_viewer/viewmodel/` | `ViewerViewModel`（`state` / `subscribe` / `dispatch` / 手势与缩放 / 播放循环 / 对话框请求 / 导出 / 删除 / 文件关联）、`formatting`（状态栏与诊断文案）、`ports.py`（`BackgroundRunner` / `TaskScheduler` / `ViewerFacade`） | 纯 Python 类，**不认识任何控件**；后台循环由状态差异驱动启停（`_reconcile_loops`） |
+| view | `src/cs_image_viewer/view/` | `app.py`（根组件：装配 + 事件分发 + effect）、`design`（设计令牌唯一投影）、`kit` / `glass` / `viewport` / `canvas` / `bars` / `dialogs` / `menu` / `keymap` / `scheduler` | 只 `import ui`；`UI = f(state)`，控件树冻结，副作用一律由 `use_effect` 声明 |
 
 三条把「分层」从口号变成可执行规则的设计：
 
@@ -329,7 +329,7 @@ Python 才会真正启动。`main.py` 按 `env → 请求文件 → argv` 顺序
 
 | cs-ui 能力 | 用途 |
 | --- | --- |
-| `ui.core.tokens` / `ui.core.palette` | 设计令牌与配色引擎（`build_scheme` 出整套 M3 色板）；`src/imageviewer/view/design.py` 的唯一色值输入 |
+| `ui.core.tokens` / `ui.core.palette` | 设计令牌与配色引擎（`build_scheme` 出整套 M3 色板）；`src/cs_image_viewer/view/design.py` 的唯一色值输入 |
 | `ui.MenuBar` / `MenuAction` / `MenuSection` | 数据驱动的桌面下拉菜单栏，快捷键用 `ui.Kbd` 键帽呈现；`shortcut_map()` / `validate_sections()` 可查询可断言 |
 | `ui.StatusBar(center=...)` | 三段式状态栏（在原两段式上扩展，旧用法向后兼容） |
 
@@ -355,9 +355,9 @@ cs-ui 只留真正跨产品一致的部分：设计令牌、配色引擎、菜�
 
 ```bash
 py -3.12 tools/layered_smoke.py
-py -3.12 -c "from imageviewer.view import design; print(design.snapshot())"      # 色表 / 布局 / 字号快照
-py -3.12 -c "from imageviewer.view import menu; print(menu.shortcut_table())"    # 快捷键表
-py -3.12 -c "from imageviewer.models import geometry as G; \
+py -3.12 -c "from cs_image_viewer.view import design; print(design.snapshot())"      # 色表 / 布局 / 字号快照
+py -3.12 -c "from cs_image_viewer.view import menu; print(menu.shortcut_table())"    # 快捷键表
+py -3.12 -c "from cs_image_viewer.models import geometry as G; \
              print(G.compute_scale(G.ViewTransform(), G.ViewSize.of(1600,1000), G.ViewSize.of(900,560)))"  # 0.56
 ```
 
@@ -371,15 +371,15 @@ py -3.12 -c "from imageviewer.models import geometry as G; \
 
 ### src 布局
 
-包位于 `src/imageviewer/`，`main.py` 与 `assets/` 留在仓库根（flet build 的入口与
-资源约定）。`pyproject.toml` 用 `package-dir = { "" = ".", imageviewer = "src/imageviewer" }`
+包位于 `src/cs_image_viewer/`，`main.py` 与 `assets/` 留在仓库根（flet build 的入口与
+资源约定）。`pyproject.toml` 用 `package-dir = { "" = ".", cs_image_viewer = "src/cs_image_viewer" }`
 把两者分别映射：**不能**写成 `{ "" = "src" }`，那样根 `main.py` 会被静默漏出
 wheel / editable 映射，控制台脚本 `imageviewer = "main:run"` 随即失效。
 配套三条约束，都由 `tools/layered_smoke.py` 守住：
 
 1. `main.py` 顶部把 `src/` 插入 `sys.path` —— 打包态不会执行 `pip install -e .`，
-   包被编译到 `<app>/src/imageviewer/`，没有这段引导就是 `ModuleNotFoundError`；
-2. 指向仓库根 / 资源目录的路径只走 `imageviewer/_paths.py`，不在调用处按
+   包被编译到 `<app>/src/cs_image_viewer/`，没有这段引导就是 `ModuleNotFoundError`；
+2. 指向仓库根 / 资源目录的路径只走 `cs_image_viewer/_paths.py`，不在调用处按
    `__file__` 数层（src 迁移后层数必然变，且错了不报错）；
 3. 子进程（daemon）不继承父进程的 `sys.path`，`infra/procs.py` 显式把 `src/`
    注入子进程命令。
@@ -399,7 +399,7 @@ tools/                自检脚本（前四个不开窗口）
   lock_check.py         单实例锁互斥
   ui_visual_check.py    真机截图（PrintWindow）+ 灰块 / 溢出 / 翻页箭头 / 抓帧有效性
 src/
-  imageviewer/         src 布局项目包（__init__.py + _paths.py 路径唯一出口）
+  cs_image_viewer/     src 布局项目包（__init__.py + _paths.py 路径唯一出口）
     _paths.py           仓库根 / 资源目录的唯一出口（禁止按 __file__ 数层）
     models/            ── 层 1：纯数据，所有层可依赖
       geometry.py          视图几何（纯计算，零 UI 依赖，可脱离窗口复算）

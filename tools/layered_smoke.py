@@ -29,7 +29,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SRC = ROOT / "src"                       # src 布局：包位于 src/imageviewer/
+SRC = ROOT / "src"                       # src 布局：包位于 src/cs_image_viewer/
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(SRC))
 
@@ -49,15 +49,15 @@ def _touch(*names: str) -> list[Path]:
 
 import ui
 
-from imageviewer import models as M
-from imageviewer.models import geometry as G
-from imageviewer.service import DisplayProvider, FileTrash, ViewerService
-from imageviewer.service.gallery import Gallery
-from imageviewer.view import bars, canvas, design, dialogs, glass, keymap, kit, menu
-from imageviewer.view.app import build_app
-from imageviewer.view.viewport import ImageViewport
-from imageviewer.viewmodel import ViewerViewModel
-from imageviewer.viewmodel.formatting import (
+from cs_image_viewer import models as M
+from cs_image_viewer.models import geometry as G
+from cs_image_viewer.service import DisplayProvider, FileTrash, ViewerService
+from cs_image_viewer.service.gallery import Gallery
+from cs_image_viewer.view import bars, canvas, design, dialogs, glass, keymap, kit, menu
+from cs_image_viewer.view.app import build_app
+from cs_image_viewer.view.viewport import ImageViewport
+from cs_image_viewer.viewmodel import ViewerViewModel
+from cs_image_viewer.viewmodel.formatting import (
     format_service_report,
     format_size,
     format_status,
@@ -245,11 +245,11 @@ LAYER_RULES: dict[str, set[str]] = {
     "viewmodel": {"models", "service"},
     "view": {"models", "viewmodel"},
 }
-PACKAGE = "imageviewer"
+PACKAGE = "cs_image_viewer"
 
 
 def _resolve_import(node: ast.ImportFrom, package: list[str]) -> str:
-    """把相对导入还原成绝对模块名（``from ..models import x`` → ``imageviewer.models``）。"""
+    """把相对导入还原成绝对模块名（``from ..models import x`` → ``cs_image_viewer.models``）。"""
     base = package[: len(package) - (node.level - 1)] if node.level else []
     tail = (node.module or "").split(".") if node.module else []
     return ".".join([*base, *tail]).strip(".")
@@ -257,7 +257,7 @@ def _resolve_import(node: ast.ImportFrom, package: list[str]) -> str:
 
 def _imported_modules(path: Path) -> set[str]:
     """一个文件里所有绝对模块名（相对导入已还原）。"""
-    # 包内文件相对 src/（还原出 imageviewer.*），根 main.py 相对仓库根。
+    # 包内文件相对 src/（还原出 cs_image_viewer.*），根 main.py 相对仓库根。
     base = SRC if path.is_relative_to(SRC) else ROOT
     rel = path.relative_to(base).with_suffix("")
     package = list(rel.parts[:-1])
@@ -287,7 +287,7 @@ def check_layers() -> None:
             if root != PACKAGE:
                 continue
             parts = module.split(".")
-            if len(parts) < 2:                       # import imageviewer 本身
+            if len(parts) < 2:                       # import cs_image_viewer 本身
                 continue
             target = parts[1]
             if target not in LAYER_RULES:
@@ -303,14 +303,14 @@ def check_layers() -> None:
         for module in _imported_modules(path)
     }
     check("models 只依赖标准库",
-          models_imports <= {"imageviewer"} | set(sys.stdlib_module_names),
+          models_imports <= {"cs_image_viewer"} | set(sys.stdlib_module_names),
           f"got {sorted(models_imports - set(sys.stdlib_module_names))}")
 
     app_imports = _imported_modules(ROOT / "main.py")
     check("组合根认识所有层",
-          {"imageviewer.models", "imageviewer.infra", "imageviewer.service",
-           "imageviewer.viewmodel", "imageviewer.view"} <= app_imports
-          or {"imageviewer.service", "imageviewer.viewmodel", "imageviewer.view"} <= app_imports,
+          {"cs_image_viewer.models", "cs_image_viewer.infra", "cs_image_viewer.service",
+           "cs_image_viewer.viewmodel", "cs_image_viewer.view"} <= app_imports
+          or {"cs_image_viewer.service", "cs_image_viewer.viewmodel", "cs_image_viewer.view"} <= app_imports,
           f"got {sorted(app_imports)[:8]}")
 
 
@@ -479,8 +479,8 @@ def check_service() -> None:
     check("删除后游标停在原位置（指向下一张）",
           gallery.index == 1 and gallery.current.name == "c.jpg", str(gallery.current))
 
-    from imageviewer.infra.display import LocalDisplay
-    from imageviewer.infra.trash import TrashBin
+    from cs_image_viewer.infra.display import LocalDisplay
+    from cs_image_viewer.infra.trash import TrashBin
 
     local_display = LocalDisplay()
     check("本地解码器满足 DisplayProvider", isinstance(local_display, DisplayProvider))
@@ -771,23 +771,23 @@ def check_wiring() -> None:
     scripts = data["project"]["scripts"]
     check("控制台脚本指向新入口",
           scripts["imageviewer"] == "main:run"
-          and scripts["imageviewer-daemon"] == "imageviewer.infra.shared.daemon:main",
+          and scripts["imageviewer-daemon"] == "cs_image_viewer.infra.shared.daemon:main",
           str(scripts))
 
     # src 布局：包必须在 src/ 下被发现，同时根 main.py 不能被 package-dir 漏掉
     setuptools_cfg = data["tool"]["setuptools"]
     check("src 布局声明完整",
-          setuptools_cfg.get("package-dir") == {"": ".", "imageviewer": "src/imageviewer"}
+          setuptools_cfg.get("package-dir") == {"": ".", "cs_image_viewer": "src/cs_image_viewer"}
           and setuptools_cfg.get("py-modules") == ["main"]
           and setuptools_cfg["packages"]["find"]["where"] == ["src"]
-          and setuptools_cfg["packages"]["find"]["include"] == ["imageviewer*"],
+          and setuptools_cfg["packages"]["find"]["include"] == ["cs_image_viewer*"],
           str(setuptools_cfg))
     layers = ("models", "infra", "service", "viewmodel", "view")
     check("五个分层目录都存在",
           all((SRC / PACKAGE / layer).is_dir() for layer in layers))
 
-    from imageviewer import service as service_pkg
-    from imageviewer.viewmodel.ports import ViewerFacade
+    from cs_image_viewer import service as service_pkg
+    from cs_image_viewer.viewmodel.ports import ViewerFacade
 
     provider = FakeProvider()
     provider.add("a.jpg")
@@ -800,7 +800,7 @@ def check_wiring() -> None:
     # 开发模式下窗口由 flet.exe 客户端进程创建（pid 与解释器不同），窗口外观函数
     # 必须能按标题回落到那个窗口；main.py 也必须真的把标题传进去，否则暗色标题栏
     # 与「显示看门狗」在开发期静默空转 —— 表现就是深色界面永远顶着一条白标题栏。
-    from imageviewer.infra import windows as win
+    from cs_image_viewer.infra import windows as win
 
     appearance = (win.flutter_windows, win.apply_dark_title_bar,
                   win.ensure_visible, win.start_show_watchdog)
@@ -813,7 +813,7 @@ def check_wiring() -> None:
     # src 布局打包必需：删掉这段引导，打包后包在 <app>/src/ 而 sys.path 不含它。
     check("main.py 保留 src 布局引导",
           "sys.path.insert(0, str(_SRC))" in main_source
-          and '(_SRC / "imageviewer").is_dir()' in main_source)
+          and '(_SRC / "cs_image_viewer").is_dir()' in main_source)
     check("路径出口唯一（_paths）", (SRC / PACKAGE / "_paths.py").is_file())
 
 

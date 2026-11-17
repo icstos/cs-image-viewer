@@ -8,10 +8,10 @@
     service   ``ImageService``：无会话的纯操作，所有窗口共享同一份
     server    loopback TCP 外壳（多线程，一连接一线程）
     client    ``ServiceClient`` / ``DirectBackend`` / ``ServiceHost`` / ``ServiceLink``
-    daemon    以大进程形态运行服务（``python -m imageviewer.infra.shared.daemon``）
+    daemon    以大进程形态运行服务（``python -m cs_image_viewer.infra.shared.daemon``）
 
 外部只需要认识两样东西：:class:`ServiceLink`（拿服务）与
-:class:`imageviewer.infra.display.shared.SharedDisplay`（用服务）。
+:class:`cs_image_viewer.infra.display.shared.SharedDisplay`（用服务）。
 """
 
 from __future__ import annotations

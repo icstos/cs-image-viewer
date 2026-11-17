@@ -11,7 +11,7 @@
 依赖方向：``view`` → ``viewmodel`` → ``service`` → ``infra``，四层都可以依赖
 ``models``；反向依赖与跨层调用均被自检（``tools/layered_smoke.py``）禁止。
 
-本包不在 ``__init__`` 里 import 任何子层：拿到 ``imageviewer.models`` 不应该
+本包不在 ``__init__`` 里 import 任何子层：拿到 ``cs_image_viewer.models`` 不应该
 顺带把 flet、PIL、socket 全拖进来 —— 那会让「不开窗口跑几何断言」变慢。
 """
 

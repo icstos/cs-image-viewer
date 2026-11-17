@@ -42,12 +42,12 @@
 
 用法::
 
-    py -3.12 -m imageviewer.infra.association install              # 注册（自动探测 build/windows）
-    py -3.12 -m imageviewer.infra.association install --exe "D:\\app\\ImageViewer.exe"
-    py -3.12 -m imageviewer.infra.association install --exe "build\\windows\\图片查看器.exe"  # 中文名同样可用
-    py -3.12 -m imageviewer.infra.association install --set-default # 同时把默认打开方式设为 ImageViewer
-    py -3.12 -m imageviewer.infra.association status                # 查看当前关联状态
-    py -3.12 -m imageviewer.infra.association uninstall             # 全部撤销
+    py -3.12 -m cs_image_viewer.infra.association install              # 注册（自动探测 build/windows）
+    py -3.12 -m cs_image_viewer.infra.association install --exe "D:\\app\\ImageViewer.exe"
+    py -3.12 -m cs_image_viewer.infra.association install --exe "build\\windows\\图片查看器.exe"  # 中文名同样可用
+    py -3.12 -m cs_image_viewer.infra.association install --set-default # 同时把默认打开方式设为 ImageViewer
+    py -3.12 -m cs_image_viewer.infra.association status                # 查看当前关联状态
+    py -3.12 -m cs_image_viewer.infra.association uninstall             # 全部撤销
 
 注意：Windows 10/11 的默认打开方式由 `UserChoice`（带校验哈希）保护，任何程序都
 无法可靠地“静默改默认”。因此 `install` 只是把 ImageViewer 注册进“打开方式”列表，
@@ -122,7 +122,7 @@ VBS_TEMPLATE = """' ImageViewer -- "Open with" launcher (auto-generated, do not 
 ' This file lives in a stable folder (%LOCALAPPDATA%\\$launcher_dir) rather than
 ' inside the build output, so rebuilding the app does not break the association.
 ' Refresh the recorded path with:
-'     py -3.12 -m imageviewer.infra.association install
+'     py -3.12 -m cs_image_viewer.infra.association install
 Option Explicit
 
 Dim fso, sh, env, target, here, cfgPath, exePath, reqDir, reqFile, stream
@@ -147,7 +147,7 @@ End If
 If exePath = "" Or Not fso.FileExists(exePath) Then
     MsgBox "ImageViewer: the application executable was not found." & vbCrLf & vbCrLf & _
            "Re-run the file association setup, then try again:" & vbCrLf & _
-           "    py -3.12 -m imageviewer.infra.association install", 48, "ImageViewer"
+           "    py -3.12 -m cs_image_viewer.infra.association install", 48, "ImageViewer"
     WScript.Quit 1
 End If
 
@@ -194,7 +194,7 @@ if defined EXE if not exist "%EXE%" set "EXE="
 if not defined EXE for %%f in ("%~dp0*.exe") do if not defined EXE set "EXE=%%~ff"
 if not defined EXE (
     echo ImageViewer: the application executable was not found.
-    echo Re-run: py -3.12 -m imageviewer.infra.association install
+    echo Re-run: py -3.12 -m cs_image_viewer.infra.association install
     exit /b 1
 )
 
