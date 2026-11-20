@@ -22,9 +22,14 @@ import os
 import sys
 import time
 
-from .. import paths
+from .. import dispatch, paths, procs
 from .client import ServiceHost
 from .runtime import Registry
+
+# 预热窗口池维护（双击极速响应的关键）
+HOT_POOL_ENV = "CSIV_HOT_POOL"         # 目标空闲预热窗口数；0 关闭
+HOT_DEFAULT_POOL = 1                   # 默认维持 1 个隐藏预热窗口
+HOT_RELAUNCH_COOLDOWN = 4.0            # 秒：两次拉起的最小间隔（等 idle 标记建立）
 
 
 def _setup_logging(verbose: bool) -> None:
@@ -56,7 +61,14 @@ def serve(idle_timeout: float = 0.0, verbose: bool = False) -> int:
     log = logging.getLogger("csiv.daemon")
     log.info("主进程已启动 pid=%s port=%s 缓存=%s 空闲退出=%s秒",
              os.getpid(), host.server.port, host.service.blobs.root, idle_timeout or "永不")
+    try:
+        pool = int(os.environ.get(HOT_POOL_ENV, str(HOT_DEFAULT_POOL)) or 0)
+    except ValueError:
+        pool = HOT_DEFAULT_POOL
     idle_since = time.monotonic()
+    last_hot_launch = 0.0
+    if pool > 0:
+        log.info("预热窗口池已启用（目标 %d 个空闲窗口）", pool)
     try:
         while True:
             time.sleep(1.0)
@@ -68,6 +80,21 @@ def serve(idle_timeout: float = 0.0, verbose: bool = False) -> int:
             if int(time.monotonic() - idle_since) % 300 == 0:
                 stats = host.service.op_stats()
                 log.debug("缓存：%s", stats["blobs"])
+            # 维持预热池：窗口转正后会清空 idle 标记并投递 replenish，这里补位。
+            # 冷却时间避免 idle 标记尚未建立时重复拉起多个窗口。
+            if pool > 0 and time.monotonic() - last_hot_launch >= HOT_RELAUNCH_COOLDOWN:
+                # 两个条件都要独立求值（不能用 or 短路吞掉 take_replenish 的消费动作）
+                need_replenish = dispatch.take_replenish()
+                no_idle = dispatch.idle_owner() is None
+                if need_replenish or no_idle:
+                    if procs.launch_hot_window():
+                        last_hot_launch = time.monotonic()
+                        log.info("已拉起一个预热窗口")
+                    else:
+                        log.warning("预热窗口拉起失败（打包态可能未配置 exe 路径），"
+                                    "退回冷启动；不影响功能")
+                        dispatch.take_replenish()   # 清掉标记，避免每轮刷日志
+                        time.sleep(9)               # 失败时拉长重试间隔
     except KeyboardInterrupt:
         log.info("收到中断，退出")
     finally:

@@ -16,13 +16,22 @@
 
 解决办法（本模块）
 ----------------------------------------------------
-关联命令指向一个“启动器”，由它把文件路径写进环境变量 `IMAGEVIEWER_OPEN`
-（并额外落一份短时效请求文件作为兜底），再以 **无参数**方式启动 exe
-（无参数 ⇒ Dart 走生产模式 ⇒ 内嵌 Python 正常启动）。应用侧
-`main.py::_resolve_start_path()` 按 env → 请求文件 → 命令行参数 的顺序解析。
+关联命令指向一个“启动器”，由它把文件路径写进环境变量 `IMAGEVIEWER_OPEN`，
+再以 **无参数**方式启动 exe（无参数 ⇒ Dart 走生产模式 ⇒ 内嵌 Python 正常启动）。
+应用侧 `main.py::_resolve_start_path()` 按 env → 请求文件 → 命令行参数 的顺序解析。
+
+两条通道**严格二选一**（这是“一次双击只开一个窗口”的关键）：有空闲预热窗口时
+只写请求文件、不启动 exe；否则只写环境变量、不写请求文件。若两条都写，冷启动
+exe（读 env）与刚好上线的预热窗口（读请求文件）会各自打开同一张图，出现重复窗口。
+请求文件的领取由 `dispatch.take_request()` 用原子改名保证并发下只有一个赢家。
 
 默认启动器是 wscript 承载的 `.vbs`：无控制台闪窗、零额外依赖、纯 ASCII 内容；
 若系统禁用了 VBScript，可用 `--launcher cmd` 换成 `.cmd`（会有一次控制台闪窗）。
+
+启动器还带一条**极速通道**：先检查 `run/hot-idle` 标记（预热的隐藏窗口待命），
+有效就只写打开请求、不启动 exe —— 由那个已装配好的窗口领单并显示，双击响应
+从冷启动 ~0.78s 降到 ~0.2s。标记失效（首次运行 / 窗口池未就绪）时才照旧冷启动。
+预热池由常驻主进程维护（`CSIV_HOT_POOL=0` 可关闭）。.protocol 见 infra/dispatch.py。
 
 **exe 叫什么名字都可以**：启动器脚本里不出现 exe 名称，exe 全路径只写进同目录的
 `app-exe.txt`（vbs 模式 = UTF-16，cmd 模式 = UTF-8 + `chcp 65001`），因此
@@ -82,6 +91,14 @@ LAUNCHER_VBS = "imageviewer-open.vbs"
 LAUNCHER_CMD = "imageviewer-open.cmd"
 EXE_CONFIG = "app-exe.txt"  # 记录 exe 全路径：vbs 模式用 UTF-16，cmd 模式用系统 ANSI
 
+# 预热窗口探测（与 infra/dispatch.py、infra/paths.py 的常量保持一致；
+# 由 tools/layered_smoke.py 断言同步，防止一边改名另一边静默失效）
+HOT_IDLE_FILE = "hot-idle"     # == dispatch.IDLE_FILE
+RUN_DIR_NAME = "run"           # == paths.run_dir() 相对 app_dir 的名字
+HOT_IDLE_MAX_AGE = 8           # 秒 == dispatch.IDLE_MAX_AGE
+HOT_WAIT_STEPS = 8             # 投递后等待领单的轮询次数
+HOT_WAIT_MS = 50               # 每次等待毫秒数（总 400ms 上限）
+
 # 打包产物可能的文件名（pyproject 的 [tool.flet.windows].artifact 决定）
 EXE_CANDIDATES = ("ImageViewer.exe", "cs-image-viewer.exe", "imageviewer.exe")
 
@@ -126,6 +143,7 @@ VBS_TEMPLATE = """' ImageViewer -- "Open with" launcher (auto-generated, do not 
 Option Explicit
 
 Dim fso, sh, env, target, here, cfgPath, exePath, reqDir, reqFile, stream
+Dim runDir, idleFile, idleAge, hotReady, i
 
 Set fso = CreateObject("Scripting.FileSystemObject")
 Set sh  = CreateObject("WScript.Shell")
@@ -151,20 +169,45 @@ If exePath = "" Or Not fso.FileExists(exePath) Then
     WScript.Quit 1
 End If
 
-If target <> "" Then
-    ' Channel 1: environment variable. Children inherit this process env block.
-    Set env = sh.Environment("PROCESS")
-    env("$open_env") = target
+reqDir = sh.ExpandEnvironmentStrings("%LOCALAPPDATA%") & "\\$launcher_dir"
+runDir = fso.BuildPath(reqDir, "$run_dir_name")
+idleFile = fso.BuildPath(runDir, "$hot_idle")
 
-    ' Channel 2: request file, consumed (and deleted) by the app on startup.
-    ' Kept as a safety net in case mutating the process env block is blocked.
-    reqDir = sh.ExpandEnvironmentStrings("%LOCALAPPDATA%") & "\\$launcher_dir"
-    If Not fso.FolderExists(reqDir) Then fso.CreateFolder(reqDir)
-    reqFile = fso.BuildPath(reqDir, "$request_file")
-    ' True = overwrite, True = Unicode (UTF-16LE with BOM), which the app reads back
-    Set stream = fso.CreateTextFile(reqFile, True, True)
-    stream.Write target
-    stream.Close
+' Decide the route FIRST, before writing any channel. A warm (hidden, fully
+' initialized) window watches the request file; a cold exe reads $open_env.
+' Writing BOTH channels would let a cold start racing with a warm window that
+' is just coming online open the SAME image twice -- two windows per double-click.
+' Exactly ONE channel is written, chosen by the idle marker below. The marker
+' carries a heartbeat mtime; a stale marker means the warm window died or was
+' promoted, so we fall back to a normal cold start.
+hotReady = False
+If target <> "" Then
+    On Error Resume Next
+    If fso.FileExists(idleFile) Then
+        idleAge = DateDiff("s", fso.GetFile(idleFile).DateLastModified, Now)
+        If idleAge >= 0 And idleAge <= $idle_max_age Then hotReady = True
+    End If
+    On Error GoTo 0
+End If
+
+If target <> "" Then
+    If hotReady Then
+        ' Warm route: hand off via the request file ONLY, then quit -- no new
+        ' Dart/exe startup. The standing-by window claims it and shows itself.
+        If Not fso.FolderExists(reqDir) Then fso.CreateFolder(reqDir)
+        reqFile = fso.BuildPath(reqDir, "$request_file")
+        ' True = overwrite, True = Unicode (UTF-16LE with BOM), read back by the app
+        Set stream = fso.CreateTextFile(reqFile, True, True)
+        stream.Write target
+        stream.Close
+        WScript.Quit 0
+    Else
+        ' COLD_PATH_NO_REQUEST: cold route writes the environment variable ONLY.
+        ' Never write $request_file here -- a warm window coming online in this
+        ' instant would claim it too and open a duplicate window for the image.
+        Set env = sh.Environment("PROCESS")
+        env("$open_env") = target
+    End If
 End If
 
 ' 1 = normal window, False = do not wait for the app to exit.
@@ -339,6 +382,9 @@ def write_launcher(launcher_dir: Path, exe: Path, mode: str = "vbs") -> Path:
             open_env=OPEN_ENV,
             request_file=REQUEST_FILE,
             launcher_dir=LAUNCHER_DIR_NAME,
+            run_dir_name=RUN_DIR_NAME,
+            hot_idle=HOT_IDLE_FILE,
+            idle_max_age=HOT_IDLE_MAX_AGE,
         )
 
     # write_bytes 避免 Windows 文本模式的换行转换：write_text 会把 \n 变成

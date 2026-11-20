@@ -44,6 +44,8 @@ Flet 1.0 没有多窗口 API，一个窗口就是一个 Flutter 进程。因此�
 ``IMAGEVIEWER_OPEN``         启动器（文件关联）写入的打开请求
 ``CSIV_SHARED=0``            关闭共享缓存，退回单进程本地解码（用于对比性能）
 ``CSIV_MASTER_IDLE``         主进程空闲多少秒后退出（默认 900；0 = 永不退出）
+``IMAGEVIEWER_ROLE=hot``     预热窗口：装配完整 UI 后隐藏待命，领到打开请求才显示
+``CSIV_HOT_POOL=0``          关闭主进程的预热窗口池（默认维持 1 个）
 ``CSIV_TIMING=1``            打印各启动阶段耗时
 ``CSIV_SMOKE=1``             冒烟模式：数秒后自动退出
 ``CSIV_WEB=1``               以 Web 方式启动（同一套代码，便于截图调试）
@@ -69,7 +71,7 @@ if str(_SRC) not in sys.path and (_SRC / "cs_image_viewer").is_dir():
 
 import ui
 
-from cs_image_viewer.infra import paths, procs
+from cs_image_viewer.infra import dispatch, paths, procs
 from cs_image_viewer.infra.association import WindowsAssociation
 from cs_image_viewer.infra.concurrency import AsyncioRunner
 from cs_image_viewer.infra.display import LocalDisplay, SharedDisplay
@@ -91,10 +93,8 @@ from cs_image_viewer.view import build_app, design, remember_window_size
 from cs_image_viewer.view.scheduler import PageTaskScheduler
 from cs_image_viewer.viewmodel import ViewerViewModel
 
-# 文件关联启动器写入的通道（与 infra/association.py、infra/procs.py 保持一致）
+# 文件关联启动器写入的通道（与 infra/association.py、infra/procs.py、infra/dispatch.py 保持一致）
 OPEN_ENV = "IMAGEVIEWER_OPEN"
-REQUEST_FILE = Path(os.environ.get("LOCALAPPDATA", "")) / "ImageViewer" / "open-request.txt"
-REQUEST_MAX_AGE = 15.0              # 秒：超过视为上次残留，直接丢弃
 
 # 进程角色（与 infra/procs.py 保持一致）
 ROLE_ENV = "IMAGEVIEWER_ROLE"
@@ -146,27 +146,7 @@ def log_crash(where: str) -> None:
 # ---------------------------------------------------------------------------
 # 启动参数
 # ---------------------------------------------------------------------------
-def _take_request_file() -> str | None:
-    """取走启动器留下的「打开请求」文件（环境变量通道被拦截时的兜底）。
-
-    无论是否采用都删除，避免残留影响后续手动启动；只有足够新的文件才认。
-    """
-    try:
-        if not REQUEST_FILE.is_file():
-            return None
-        age = time.time() - REQUEST_FILE.stat().st_mtime
-        text = REQUEST_FILE.read_text(encoding="utf-16").strip()
-    except (OSError, UnicodeError):
-        return None
-    finally:
-        try:
-            REQUEST_FILE.unlink()
-        except OSError:
-            pass
-    return text if text and age <= REQUEST_MAX_AGE else None
-
-
-def _resolve_start_path() -> tuple[str | None, str]:
+def _resolve_start_path(*, take_request_file: bool = True) -> tuple[str | None, str]:
     """确定启动时要打开的文件 / 文件夹，返回 ``(绝对路径, 来源说明)``。
 
     三条通道，按优先级：
@@ -175,14 +155,19 @@ def _resolve_start_path() -> tuple[str | None, str]:
        ``flet build`` 产物的 Dart 外壳会把任何命令行参数当成「开发模式」的页面
        地址，关联命令直接传 ``"%1"`` 会导致 Python 端完全不启动，因此改由启动器
        写环境变量并以**无参数**方式拉起 exe。
-    2. 请求文件 —— 同一启动器的兜底通道（环境变量被系统策略拦截时仍可用）。
+    2. 请求文件 —— 由 ``dispatch.take_request()`` **原子认领**：并发下只有一个
+       进程能拿到，从根上杜绝「冷启动 exe + 预热窗口同时领单」开出多个窗口。
+       环境变量通道被系统策略拦截时仍可用。
     3. 命令行参数 —— 开发期 ``py -3.12 main.py <路径>`` 及控制台脚本。
+
+    ``take_request_file=False`` 给**预热窗口启动**用：它只通过 ``_hot_standby``
+    领单，若在装配阶段就消费了请求文件，会加载图片却保持隐藏，导致这次双击丢单。
 
     不存在的路径直接跳过（关联表里的历史记录可能已指向被删除的文件）。
     """
     candidates: list[tuple[str | None, str]] = [
         (os.environ.get(OPEN_ENV), f"env:{OPEN_ENV}"),
-        (_take_request_file(), "request-file"),
+        (dispatch.take_request() if take_request_file else None, "request-file"),
         *((argument, "argv") for argument in sys.argv[1:]),
     ]
     for raw, source in candidates:
@@ -323,7 +308,10 @@ async def _main(page: ui.Page) -> None:
     # 在 render 前捕获初始客户端尺寸（page.width/height 可能陈旧）
     page.on_resize = lambda event: remember_window_size(event.width, event.height)
 
-    start_path, start_source = _resolve_start_path()
+    is_hot = os.environ.get(ROLE_ENV) == procs.HOT_ROLE
+    # 预热窗口在装配阶段绝不能消费请求文件：它还没进入 _hot_standby 轮询，
+    # 领了也无法显示，会把这次双击变成一次丢单。
+    start_path, start_source = _resolve_start_path(take_request_file=not is_hot)
     os.environ.pop(OPEN_ENV, None)          # 用掉即清，避免泄漏给子进程
     _mark("start path resolved")
 
@@ -344,6 +332,12 @@ async def _main(page: ui.Page) -> None:
     _configure_window(page)
     page.update()
     _mark("ui pushed")
+
+    if is_hot:
+        # 预热窗口：UI/服务/缓存已全部就绪，但不显示。转入待命，
+        # 启动器双击时把路径投进来，这里加载后立即显示 —— 跳过全部冷启动开销。
+        page.run_task(_hot_standby, page, vm)
+        return
 
     await _reveal_window(page)
 
@@ -375,6 +369,66 @@ async def _smoke_run(page: ui.Page, start_source: str, start_path: str | None) -
         await page.window.close()
     except RuntimeError:
         pass        # 窗口已关闭 → 会话断开，flet 的 close() 会抛 "Session closed"
+
+
+async def _hot_standby(page: ui.Page, vm: ViewerViewModel) -> None:
+    """预热窗口待命循环：装配完成后隐藏，轮询启动器投递的打开请求。
+
+    领单流程（对应 infra/dispatch.py 的协议）：
+    1. 登记 ``hot-idle``（只写一个，多个预热窗口自然互斥）；
+    2. 每 ~120ms 看一次 ``open-request.txt``，发现新请求立即写 ack + 删 idle；
+    3. 用 viewmodel 的常规 ``open_file`` / ``open_folder`` 加载（复用首帧全部逻辑）；
+    4. 显示窗口、抢焦点；若已开着窗口则只切换内容；
+    5. 通知 daemon 补一个预热窗口，维持池中始终有一个待命。
+
+    收到请求前窗口始终隐藏，Do not call ``_reveal_window`` until a request arrives。
+    """
+    import asyncio
+
+    pid = os.getpid()
+    dispatch.mark_idle(pid)
+    dispatch.clear_stale_acks()
+    _mark("hot standby (hidden)")
+    seen_mtime = dispatch.request_path().stat().st_mtime if dispatch.request_path().is_file() else 0.0
+    try:
+        while True:                         # 窗口关闭时 Flet 会取消该任务（CancelledError）
+            await asyncio.sleep(0.12)
+            dispatch.mark_idle(pid)         # 心跳：刷新 mtime，daemon 据此判断我还活着
+            path = dispatch.request_path()
+            try:
+                mtime = path.stat().st_mtime if path.is_file() else 0.0
+            except OSError:
+                mtime = 0.0
+            # 请求文件必须是「新的」：mtime 变化，且内容非空、未过期
+            if mtime <= seen_mtime or mtime == 0.0:
+                continue
+            seen_mtime = mtime
+            target = dispatch.take_request(max_age=dispatch.REQUEST_MAX_AGE)
+            if not target:
+                continue
+            # 领单成功：写回执 + 注销 idle，让启动器/其它窗口知道这单已被接走
+            dispatch.write_ack(pid, target)
+            dispatch.clear_idle(pid)
+            candidate = os.path.abspath(target.strip().strip('"'))
+            if not os.path.exists(candidate):
+                continue
+            try:
+                if os.path.isdir(candidate):
+                    await vm.open_folder(candidate)
+                else:
+                    await vm.open_file(candidate)
+            except Exception as exc:
+                print(f"[hot] load failed: {exc!r}", flush=True)
+                log_crash("hot load")
+            await _reveal_window(page)
+            _mark("hot promoted")
+            # 请求 daemon 补位：写标记后交给 daemon 循环处理（它持有 launch_hot_window）
+            dispatch.request_replenish()
+            return
+    except asyncio.CancelledError:
+        raise
+    finally:
+        dispatch.clear_idle(pid)
 
 
 def run() -> None:

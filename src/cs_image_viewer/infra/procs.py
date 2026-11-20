@@ -33,9 +33,11 @@ from collections.abc import Sequence
 from pathlib import Path
 
 OPEN_ENV = "IMAGEVIEWER_OPEN"          # 与 association.py / main.py 保持一致
-ROLE_ENV = "IMAGEVIEWER_ROLE"          # 进程角色：window / daemon
+ROLE_ENV = "IMAGEVIEWER_ROLE"          # 进程角色：window / daemon / hot（预热窗口）
 IDLE_ENV = "CSIV_MASTER_IDLE"          # 主进程空闲多少秒后退出（0 = 永不退出）
 DEFAULT_IDLE = 900.0                   # 15 分钟：所有窗口关掉后回收那 30MB
+
+HOT_ROLE = "hot"                       # 预热窗口：装配完整 UI 但隐藏待命，收到双击请求即显示
 
 # 随包携带的解释器启动器（打包态用它拉起无窗口主进程）
 RUNTIME_ASSET = ("assets", "runtime", "python.exe")
@@ -272,6 +274,44 @@ def launch_daemon(idle: float | None = None) -> bool:
 def service_available() -> bool:
     """能否由一个**独立的无窗口进程**提供共享服务（开发态与打包态都为真）。"""
     return runtime_python() is not None
+
+
+def launch_hot_window() -> bool:
+    """拉起一个**预热窗口**：隐藏、装配完整 UI、连好服务后待命。
+
+    这是「双击极速响应」的关键：最贵的 Dart 外壳启动 + Python 导入 + UI 装配
+    都在用户双击**之前**完成。收到打开请求时只需加载图片并显示，无需再走一遍
+    冷启动流程。角色通过 ``IMAGEVIEWER_ROLE=hot`` 告诉 main.py 进入待命模式。
+
+    开发态：与 launch_window 相同，用当前解释器跑 main.py；
+    打包态：**必须启动真正的 exe**（Dart 外壳），因为只有它内嵌了 Flutter
+    引擎、能创建窗口 —— 不能像 daemon 那样用 python.exe 顶替。exe 路径从
+    文件关联配置里读（install 时写入），读不到就放弃（退回普通冷启动）。
+    """
+    env = os.environ.copy()
+    env[ROLE_ENV] = HOT_ROLE
+    env.pop(OPEN_ENV, None)                         # 预热窗口不预占任何打开请求
+    if python_exe():
+        # 开发态：环境变量传角色（argv 会被 flet 当页面 URL 拦截，不能用参数）
+        return _popen(_base_command(), env, hidden=False)
+
+    from .association import EXE_CANDIDATES, read_exe_config  # 延迟导入，避免循环依赖
+
+    exe = read_exe_config()                         # install 时记录的完整路径（首选）
+    if not exe or not Path(exe).is_file():
+        # 没装文件关联也能预热：扫描应用目录里的 exe（打包产物名见 pyproject artifact）
+        root = app_root()
+        candidates = [root / f"{name}.exe" for name in EXE_CANDIDATES if not name.lower().endswith(".exe")]
+        candidates += [root / name for name in EXE_CANDIDATES if name.lower().endswith(".exe")]
+        found = next((p for p in candidates if p.is_file()), None)
+        if found is None:
+            singles = [p for p in root.glob("*.exe") if p.is_file()]
+            found = singles[0] if len(singles) == 1 else None
+        exe = str(found) if found else ""
+    if not exe or not Path(exe).is_file():
+        return False
+    # 打包态的 exe 读环境变量决定角色（Dart 外壳无参数运行内嵌 Python）
+    return _popen([exe], env, hidden=False, breakaway=True)
 
 
 class WindowLauncher:
