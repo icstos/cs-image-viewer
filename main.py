@@ -109,12 +109,6 @@ WINDOW_TITLE = "ImageViewer"
 # 隐藏窗口期间的漏画帧也不会闪出白色。
 BG_COLOR = design.C_SURFACE
 
-# 全局字体：阿里普惠体，随应用一起打包，不依赖目标机器装了什么中文字体。
-# 路径相对 assets 目录（flet build 会把 assets/ 整体拷进安装包），
-# 因此开发运行与打包后的路径写法完全一致。
-FONT_FAMILY = "AlibabaPuHuiTi"
-FONT_FILE = "/fonts/AlibabaPuHuiTi-3-55-Regular.otf"
-
 # 启动计时起点（模块导入即开始，覆盖 Python 端全部启动开销）
 _T0 = time.perf_counter()
 _TIMING = bool(os.environ.get("CSIV_TIMING"))
@@ -188,12 +182,14 @@ def _configure_theme(page: ui.Page) -> None:
     ``apply_theme`` 会同时写 ``page.theme`` / ``page.dark_theme`` 两棵由品牌色算出的
     完整色板，并设置画布底色 —— cs-ui 组件里的 ``ON_SURFACE_VARIANT`` 这类角色名
     由 Flutter 按这棵树解析，所以深色界面里文字不会变成浅色主题下的深灰。
-    字体挂在 Theme 上，菜单 / 状态栏 / 弹窗 / 提示统一继承。
+    字体族不在本项目指定：``state.font_family`` 保持 ``None``，由 cs-ui 按运行
+    平台选用系统字体（Windows = Segoe UI + Microsoft YaHei 回退，见 ``ui.core.fonts``）。
+    ``apply_theme`` 内部调用 ``fonts.apply_fonts`` 记录平台，主题树下发的文字（状态栏、
+    弹窗、提示等）统一继承；本项目不再持有字体文件，也不必登记 ``page.fonts``。
     """
     state = ui.theme_state()
     state.set_mode(design.MODE)
     state.set_primary(design.BRAND_PRIMARY)
-    state.font_family = FONT_FAMILY
     ui.apply_theme(page, state)
 
 
@@ -302,8 +298,7 @@ async def _main(page: ui.Page) -> None:
     page.title = WINDOW_TITLE
     page.bgcolor = BG_COLOR
     page.padding = 0
-    # 字体必须在 render 之前登记：首帧就用上本地字体，避免先按系统字体排版再跳字。
-    page.fonts = {FONT_FAMILY: FONT_FILE}
+    # 主题（含字体）必须在 render 之前下发，首帧就用上 cs-ui 选定的系统字体。
     _configure_theme(page)
     # 在 render 前捕获初始客户端尺寸（page.width/height 可能陈旧）
     page.on_resize = lambda event: remember_window_size(event.width, event.height)

@@ -24,8 +24,8 @@ def repo_root() -> Path:
 def assets_dir() -> Path:
     """返回项目资源目录；优先向上找真实存在的 ``assets/``。
 
-    找不到时回退到仓库根下的 ``assets/``，由调用方决定如何降级（例如跳过
-    可选字体）。不要在调用处再写 ``../assets`` —— 层级一变就会静默失效。
+    找不到时回退到仓库根下的 ``assets/``，由调用方决定如何降级。不要在调用处
+    再写 ``../assets`` —— 层级一变就会静默失效。
     """
     here = Path(__file__).resolve()
     for parent in here.parents:

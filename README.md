@@ -322,7 +322,7 @@ Python 才会真正启动。`main.py` 按 `env → 请求文件 → argv` 顺序
 - 滚轮交互：图片完全可见时向上/向下翻页；图片放大溢出视口时向上/向下滚动浏览（到边界自动停止）；按住 Ctrl 滚轮则以鼠标所在位置为锚点缩放
 - 窗口尺寸变化自动重算并居中；幻灯片默认 3 秒间隔，可调 1/2/3/5/10 秒
 - 底部状态栏：文件名 / 分辨率+大小 / 页码+实时缩放百分比；全屏隐藏全部 UI
-- 界面统一使用随包分发的本地字体 `assets/fonts/AlibabaPuHuiTi-3-55-Regular.otf`（阿里普惠体）：不依赖目标机器装了什么中文字体，菜单、状态栏、弹窗、提示的文字风格一致；字体路径相对 `assets/` 声明，开发运行与 `flet build` 产物同一套写法
+- 字体交给 cs-ui 统一管理：应用不携带字体文件、不指定 `font_family`，由 `ui.core.fonts` 按运行平台选系统字体（Windows：`Segoe UI` + `Microsoft YaHei` 回退）；`ui.apply_theme` 在首帧前把字体写进主题树，状态栏、弹窗、提示等文字统一继承，深浅主题一致
 
 ## 分层架构（MVVM + 依赖倒置）
 
@@ -432,7 +432,6 @@ wheel / editable 映射，控制台脚本 `imageviewer = "main:run"` 随即失�
 pyproject.toml        依赖与打包配置（PEP 621 + [tool.flet] + src 布局映射）
 main.py               唯一组合根（装配五层；角色分发：窗口 / 主进程；启动路径：env / 请求文件 / argv）
                       顶部含 src 布局引导：把 src/ 插入 sys.path，打包后仍能 import 包
-assets/fonts/         随包字体（AlibabaPuHuiTi-3-55-Regular.otf，全局界面字体）
 assets/runtime/       随包解释器启动器（python.exe，约 100KB，用于拉起无窗口主进程）
 tools/                自检脚本（前四个不开窗口）
   layered_smoke.py      分层约束（ast 检查依赖方向）+ 各层行为 + 装配一致性
